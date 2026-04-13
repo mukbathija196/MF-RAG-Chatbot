@@ -1,0 +1,31 @@
+# Official corpus — Groww only (docs/architecture.md §2.1)
+amc: Nippon India Mutual Fund
+
+sources:
+  - url: https://groww.in/mutual-funds/amc/nippon-india-mutual-funds
+    role: amc
+    scheme_name: Nippon India Mutual Fund (AMC)
+
+  - url: https://groww.in/mutual-funds/nippon-india-large-cap-fund-direct-growth
+    role: scheme
+    scheme_name: Nippon India Large Cap Fund
+
+  - url: https://groww.in/mutual-funds/nippon-india-small-cap-fund-direct-growth
+    role: scheme
+    scheme_name: Nippon India Small Cap Fund
+
+  - url: https://groww.in/mutual-funds/nippon-india-elss-tax-saver-fund-direct-growth
+    role: scheme
+    scheme_name: Nippon India ELSS Tax Saver Fund
+
+  - url: https://groww.in/mutual-funds/nippon-india-multi-cap-fund-direct-growth
+    role: scheme
+    scheme_name: Nippon India Multi Cap Fund
+
+  - url: https://groww.in/mutual-funds/nippon-india-index-fund-nifty-50-plan-direct-growth
+    role: scheme
+    scheme_name: Nippon India Index Fund — Nifty 50 Plan
+
+  - url: https://groww.in/mutual-funds/nippon-india-conservative-hybrid-fund-direct-growth
+    role: scheme
+    scheme_name: Nippon India Conservative Hybrid Fund

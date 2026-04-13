@@ -1,0 +1,39 @@
+# Daily corpus refresh — see docs/architecture.md §2.2
+name: Daily MF corpus refresh
+
+on:
+  schedule:
+    # 10:00 Asia/Kolkata (IST): 04:30 UTC — see docs/architecture.md §2.2
+    - cron: "30 4 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ingestion
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # - name: Install Playwright browser
+      #   run: playwright install chromium
+
+      - name: Run full ingestion
+        run: python scripts/run_full_ingestion.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vectorstore-and-raw
+          path: |
+            data/raw
+            data/vectorstore

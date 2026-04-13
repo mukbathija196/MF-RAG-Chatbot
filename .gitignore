@@ -1,0 +1,21 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+*.egg-info/
+dist/
+build/
+
+# ChromaDB persistence (large / local)
+data/vectorstore/*
+!data/vectorstore/.gitkeep
+
+# Optional: ignore scraped HTML in git (uncomment if you prefer)
+# data/raw/*.html
+# data/raw/ingest_manifest.jsonl

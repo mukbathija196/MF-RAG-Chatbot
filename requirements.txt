@@ -1,0 +1,15 @@
+# Python 3.11+ recommended (matches CI). Pinned for reproducible installs — Phase 1.
+openai==1.55.3
+langchain==0.3.13
+langchain-community==0.3.13
+langchain-chroma==0.1.4
+chromadb==0.5.23
+sentence-transformers==3.3.1
+streamlit==1.40.0
+pymupdf==1.24.14
+beautifulsoup4==4.12.3
+requests==2.32.3
+python-dotenv==1.0.1
+tiktoken==0.8.0
+playwright==1.49.0
+pyyaml==6.0.2
