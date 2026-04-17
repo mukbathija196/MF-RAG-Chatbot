@@ -1,4 +1,6 @@
-# RAG Mutual Fund FAQ Chatbot
+# MF-RAG-Chatbot
+
+RAG-based AI chatbot for mutual fund FAQs (Nippon India schemes on Groww).
 
 This project is a RAG-based chatbot for Nippon India Mutual Fund scheme FAQs, using Groww URLs as the only ingestion/citation sources.
 
@@ -111,3 +113,7 @@ The report includes:
 - Guardrails block PII, advice, and return-projection/comparison asks.
 - Holdings/sector answers are generated from structured records in `data/processed/holdings_records.jsonl`.
 - Scheduler workflow is in `.github/workflows/daily-ingestion.yml`.
+
+## Repository
+
+https://github.com/mukbathija196/MF-RAG-Chatbot
