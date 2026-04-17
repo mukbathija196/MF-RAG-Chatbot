@@ -12,6 +12,12 @@ __pycache__/
 dist/
 build/
 
+# Node / Next.js
+node_modules/
+frontend/node_modules/
+frontend/.next/
+.next/
+
 # ChromaDB persistence (large / local)
 data/vectorstore/*
 !data/vectorstore/.gitkeep

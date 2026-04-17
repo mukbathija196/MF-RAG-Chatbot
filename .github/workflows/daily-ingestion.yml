@@ -14,6 +14,18 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
+      PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+      PINECONE_INDEX: ${{ secrets.PINECONE_INDEX }}
+      PINECONE_NAMESPACE: ${{ secrets.PINECONE_NAMESPACE }}
+      PINECONE_CLOUD: ${{ secrets.PINECONE_CLOUD }}
+      PINECONE_REGION: ${{ secrets.PINECONE_REGION }}
+      PINECONE_HOST: ${{ secrets.PINECONE_HOST }}
+      EMBEDDING_MODEL: ${{ secrets.EMBEDDING_MODEL }}
+      # Wipe Pinecone namespace before upsert so only the latest run’s vectors exist.
+      PINECONE_REPLACE_NAMESPACE: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -33,7 +45,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: vectorstore-and-raw
+          name: raw-and-processed
+          retention-days: 1
           path: |
             data/raw
-            data/vectorstore
+            data/processed

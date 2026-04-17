@@ -28,7 +28,7 @@
 │                                                                         │
 │  ┌──────────────┐    ┌──────────────┐    ┌───────────────────────────┐  │
 │  │ Query         │───▶│ Embedding    │───▶│  Vector Similarity Search │  │
-│  │ Preprocessor  │    │ (same model) │    │  (ChromaDB / FAISS)       │  │
+│  │ Preprocessor  │    │ (same model) │    │  (Pinecone)               │  │
 │  └──────────────┘    └──────────────┘    └────────────┬──────────────┘  │
 │                                                       │ top-k chunks    │
 │                                           ┌───────────▼──────────────┐  │
@@ -56,7 +56,7 @@
 │                           │                                             │
 │                           ▼                                             │
 │               ┌───────────────────────┐                                 │
-│               │   LLM (OpenAI GPT-4o) │                                 │
+│               │   LLM (Groq-hosted Llama) │                              │
 │               └───────────┬───────────┘                                 │
 │                           │                                             │
 │                           ▼                                             │
@@ -75,7 +75,7 @@
 
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  SCHEDULER — GitHub Actions (`schedule`: daily 10:00 — see §2.2 TZ)      │
-│  Triggers workflow → scrape → parse → chunk → embed → refresh ChromaDB   │
+│  Triggers workflow → scrape → parse → chunk → embed → upsert Pinecone    │
 └────────────────────────────────┬────────────────────────────────────────┘
                                  │ daily (or manual `workflow_dispatch`)
                                  ▼
@@ -94,8 +94,8 @@
 │  (7 Groww URLs)                          └───────────┬───────────────┘  │
 │                                                    │ vectors          │
 │                                          ┌─────────▼───────────────┐  │
-│                                          │  Vector Store (ChromaDB) │  │
-│                                          │  `data/vectorstore/`      │  │
+│                                          │  Vector Store (Pinecone) │  │
+│                                          │  cloud index             │  │
 │                                          └──────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -181,16 +181,17 @@ on: schedule + workflow_dispatch
 
 | Pattern | What happens after embed | Good for |
 |---------|---------------------------|----------|
-| **A. Artifact only** | Upload `data/raw/` + `data/vectorstore/` as workflow **artifacts** (e.g. 14-day retention) | CI proof; not auto-consumed by Streamlit |
-| **B. Commit to repo** | Commit updated Chroma + manifest on a branch or main | Simple demo; watch repo size / LFS |
-| **C. Blob / object storage** | `aws s3 sync` or similar → app pulls on startup | Production-style |
-| **D. Self-hosted runner** | Same machine as app; workflow writes to local disk Streamlit reads | Lowest latency |
+| **A. Artifact only** | Upload `data/raw/` + `data/processed/` as workflow **artifacts** (short retention, e.g. **1 day**) | CI proof and debugging trail |
+| **B. Pinecone direct** | Ingestion job upserts vectors directly into Pinecone namespace/index | Recommended for this project |
+| **C. Commit manifests** | Commit only manifests/debug outputs; keep vectors in Pinecone | Keeps repo small |
+| **D. Blob / object storage** | Store parsed/chunked intermediates in S3/GCS if needed | Production observability |
 
 **Operational defaults**
 
 - **`concurrency`:** `group: ingestion` + `cancel-in-progress: false` so overlapping days do not corrupt a half-written store (or use a lock file inside the job).
 - **Failures:** `continue-on-error: false` on the ingestion step; optional Slack / email via third-party action on failure.
-- **Secrets:** Scraping usually needs no API keys; if you later add paid proxies, store tokens in GitHub **Secrets**.
+- **Secrets:** Store `PINECONE_API_KEY` (and index/region vars) in GitHub **Secrets**; add proxy creds only if needed.
+- **Latest-only semantics:** Each successful run **replaces** prior data where it would otherwise linger: Pinecone namespace is cleared before upsert (`PINECONE_REPLACE_NAMESPACE`, default on), `data/raw/*.html` is pruned to match the new manifest, processed JSONL files are overwritten, and workflow artifacts use short retention. See `docs/deployment.md` §4.1.1.
 
 **Minimal workflow sketch** (adjust cron for your timezone; install Playwright browsers if needed):
 
@@ -209,6 +210,14 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
+      PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+      PINECONE_INDEX: ${{ secrets.PINECONE_INDEX }}
+      PINECONE_NAMESPACE: ${{ secrets.PINECONE_NAMESPACE }}
+      PINECONE_CLOUD: ${{ secrets.PINECONE_CLOUD }}
+      PINECONE_REGION: ${{ secrets.PINECONE_REGION }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -219,10 +228,10 @@ jobs:
       - run: python scripts/run_full_ingestion.py
       - uses: actions/upload-artifact@v4
         with:
-          name: vectorstore-and-raw
+          name: raw-and-manifest
           path: |
             data/raw
-            data/vectorstore
+            data/processed
 ```
 
 ---
@@ -269,13 +278,13 @@ For each URL in sources.yaml:
 | `data/raw/*.html` | Parser input; **one file per seed URL** after successful fetch |
 | `data/raw/ingest_manifest.jsonl` | Audit trail; drives `last_scraped_date` in chunk metadata |
 
-**Out of scope for scraper:** tokenization, chunking, embeddings (handled in §2.4). The scraper **must not** mutate ChromaDB.
+**Out of scope for scraper:** tokenization, chunking, embeddings (handled in §2.4). The scraper **must not** mutate Pinecone.
 
 ---
 
 ### 2.4 Chunking & embedding architecture
 
-This is the **index build** stage: turn cleaned text into **vectorized chunks** stored in ChromaDB. It runs **after** the scraping service (locally or in the same GitHub Actions job).
+This is the **index build** stage: turn cleaned text into **vectorized chunks** stored in Pinecone. It runs **after** the scraping service (locally or in the same GitHub Actions job).
 
 #### 2.4.1 End-to-end flow (chunking + embedding)
 
@@ -297,10 +306,10 @@ ingest_manifest.jsonl + *.html
 ┌─────────────────────┐
 │  Embedding service  │  See §2.4.3 — batch encode → L2-normalized vectors
 └──────────┬──────────┘
-           │  embeddings (float32, dim 384) + same metadata
+           │  embeddings (float32, dim = provider model output) + same metadata
            ▼
 ┌─────────────────────┐
-│  Chroma upsert      │  See §2.4.4 — replace or versioned write
+│  Pinecone upsert    │  See §2.4.4 — namespace upsert strategy
 └─────────────────────┘
 ```
 
@@ -334,25 +343,27 @@ ingest_manifest.jsonl + *.html
 
 | Property | Choice |
 |----------|--------|
-| Model | `sentence-transformers/all-MiniLM-L6-v2` |
-| Vector dimension | **384** |
-| Device | CPU in CI is sufficient; GPU optional locally |
-| Batch size | **32–64** texts per `model.encode` call (tune to runner RAM) |
-| Normalization | **L2-normalize** each vector (required for cosine distance in Chroma) |
+| Model | `llama-text-embed-v2` |
+| Vector dimension | **Match model output dimension** (set Pinecone index dimension accordingly) |
+| Runtime | API-based embedding inference (no local GPU required) |
+| Batch size | Provider/API dependent; use moderate request batching with retries |
+| Normalization | Optional if using Pinecone cosine; keep consistent between index/query |
 | Dtype | `float32` for storage |
 
 **Alignment rule:** The **same** model weights and preprocessing must be used in **ingestion** (this section) and at **query time** (retrieval pipeline) so query and document vectors live in the same space.
 
-**Alternative model (optional):** `BAAI/bge-small-en-v1.5` — better retrieval quality, slightly heavier; if switched, re-embed the **full** corpus and bump a `embedding_model_version` in metadata.
+**Alternative model (optional):** `text-embedding-3-small` (OpenAI) or local sentence-transformers model; if switched, re-embed the **full** corpus and bump `embedding_model_version` in metadata.
 
-#### 2.4.4 ChromaDB write strategy (scheduled refresh)
+#### 2.4.4 Pinecone write strategy (scheduled refresh)
 
-For a **small corpus** and a **daily full scrape**, the simplest correct approach is **full rebuild per run**:
+For this small corpus and daily refresh, use **namespace replace per run**:
 
-1. After successful scrape + parse + chunk + embed for **all** URLs:
-2. **Delete** the existing collection `mf_faq_chunks` (or drop the persist directory), then **recreate** and `add` all new chunks with embeddings.
+1. Build vectors for all URLs.
+2. Upsert into a timestamped namespace (for example `mf-faq-2026-04-14`).
+3. After success, switch active namespace via config/env (for example `PINECONE_NAMESPACE`).
+4. Delete old namespace(s) on retention policy (e.g. keep last 3).
 
-This avoids orphan chunks from removed UI sections and keeps IDs stable within a run. If you need zero downtime, use **dual collections** (`mf_faq_chunks_active` / `_next`) and swap an alias file or env var after a successful build.
+This gives simple rollback and avoids partial-index corruption during a failed run.
 
 ---
 
@@ -360,16 +371,17 @@ This avoids orphan chunks from removed UI sections and keeps IDs stable within a
 
 | Property | Choice |
 |----------|--------|
-| Database | **ChromaDB** (persistent mode) |
-| Storage path | `data/vectorstore/` |
-| Collection name | `mf_faq_chunks` |
+| Database | **Pinecone** (managed cloud vector DB) |
+| Index name | `mf-faq-chunks` (example) |
+| Namespace | `mf-faq-active` (switchable per refresh) |
 | Distance metric | Cosine similarity |
+| Index dimension | Must equal `llama-text-embed-v2` output dimension |
 | Stored metadata per chunk | `scheme_name`, `amc`, `doc_type`, `source_url`, `last_scraped_date`, `chunk_index` |
 
-**Why ChromaDB?**
-- Zero-config, file-based persistence — ideal for a prototype.
-- Native LangChain integration.
-- Metadata filtering support (filter by `scheme_name` or `doc_type` at query time).
+**Why Pinecone?**
+- Managed cloud index (no local persistence management).
+- Easy metadata filtering (`scheme_name`, `doc_type`) at query time.
+- Fits scheduled ingestion from GitHub Actions with stable API.
 
 ---
 
@@ -391,14 +403,14 @@ User Query: "What is the exit load for Nippon India Small Cap Fund?"
 │  2. Embed query                 │
 │     (same model as ingestion)   │
 └──────────────┬─────────────────┘
-               │  query vector (384-d)
+               │  query vector (same dim as index)
                ▼
 ┌────────────────────────────────┐
 │  3. Vector search               │
-│     ChromaDB.query(             │
-│       query_embeddings,         │
-│       n_results = 10,           │
-│       where = {"scheme_name":   │
+│     Pinecone.query(             │
+│       vector=query_embedding,   │
+│       top_k = 10,               │
+│       filter = {"scheme_name":  │
 │         "Nippon India Small Cap Fund"} │   ← optional metadata filter
 │     )                           │
 └──────────────┬─────────────────┘
@@ -464,18 +476,21 @@ If matched → return:
 
 #### 2.7.3 Performance-Claim Detector
 
-Catches queries asking to compute or compare returns:
+Blocks only projection/comparison queries (not factual scheme return lookups):
 
 ```
-PERFORMANCE_SIGNALS = [
-    "returns", "CAGR", "XIRR", "performance",
-    "compare returns", "how much profit",
-    "annualized", "NAV growth",
+PERFORMANCE_BLOCK_SIGNALS = [
+    "compare returns", "compare CAGR", "which is better",
+    "higher return", "best return", "outperform", "vs",
+    "if I invest", "how much profit", "future return",
+    "expected return", "calculate XIRR", "calculate CAGR"
 ]
 ```
 
 If matched → return:
-> "I don't compute or compare returns. For performance data, see the scheme’s Groww page: [link from chunk metadata source_url]."
+> "I can't compute custom return projections or compare performance across funds. I can share factual return/CAGR values from source pages for a specific scheme."
+
+If user asks factual scheme-level performance (for example, “What is the 3Y return of Nippon India Large Cap Fund?”), the query is **allowed** and processed normally via retrieval + generation.
 
 ---
 
@@ -485,8 +500,8 @@ If matched → return:
 
 | Property | Choice |
 |----------|--------|
-| Primary model | **OpenAI GPT-4o-mini** |
-| Fallback model | **OpenAI GPT-3.5-turbo** (cost fallback) |
+| Primary model | **Groq `llama-3.1-8b-instant`** |
+| Fallback model | **Groq `llama-3.1-70b-versatile`** (quality fallback) |
 | Temperature | 0.1 (near-deterministic for factual Q&A) |
 | Max output tokens | 300 |
 
@@ -577,16 +592,101 @@ USER:
 | Language | Python | 3.11+ |
 | Scheduler / CI | **GitHub Actions** (`schedule` + optional `workflow_dispatch`) | workflow YAML |
 | Orchestration | LangChain | 0.2.x |
-| LLM | OpenAI GPT-4o-mini | via `openai` SDK |
-| Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) | HuggingFace |
+| LLM | Groq Llama models | via `groq` SDK |
+| Embeddings | `llama-text-embed-v2` | provider API |
 | Re-ranker | cross-encoder (`ms-marco-MiniLM-L-6-v2`) | HuggingFace |
-| Vector Store | ChromaDB | 0.5.x |
+| Vector Store | Pinecone | cloud |
 | PDF Parsing | PyMuPDF (`fitz`) | 1.24.x |
 | Web Scraping | `requests` + `BeautifulSoup4`; Playwright if Groww is CSR-heavy | — |
 | Chunk length | `tiktoken` (or LangChain token counter) aligned with splitter | optional dep |
 | UI | Streamlit | 1.38.x |
-| Config | `python-dotenv` | — |
+| Pinecone SDK | `pinecone` | latest |
+| Config | `python-dotenv` + environment variables | — |
 | PII Detection | regex (built-in) | — |
+
+---
+
+## 3.1 Configuration & Environment Variables
+
+Use environment variables for all runtime config that differs by environment (local vs CI). Keep `.env` local-only; use GitHub Secrets in Actions.
+
+### 3.1.1 Required `.env` variables (local)
+
+| Variable | Required | Example | Used in |
+|----------|----------|---------|---------|
+| `GROQ_API_KEY` | Yes (Phase 6+) | `gsk_...` | `src/generation/llm_client.py` |
+| `GROQ_MODEL` | Recommended | `llama-3.1-8b-instant` | `src/generation/llm_client.py` |
+| `PINECONE_API_KEY` | Yes (Phase 3+) | `pcsk_...` | `src/ingestion/embedder.py`, `src/retrieval/retriever.py` |
+| `PINECONE_INDEX` | Yes (Phase 3+) | `mf-faq-chunks` | Ingestion + retrieval |
+| `PINECONE_NAMESPACE` | Yes (Phase 3+) | `mf-faq-active` | Ingestion + retrieval |
+| `PINECONE_CLOUD` | Recommended | `aws` | Pinecone client init |
+| `PINECONE_REGION` | Recommended | `us-east-1` | Pinecone client init |
+| `PINECONE_HOST` | Optional | `https://...pinecone.io` | Use host-based index connection instead of index-name lookup |
+| `PINECONE_REPLACE_NAMESPACE` | Recommended | `1` | Ingestion: `delete_all` on namespace before upsert (`src/ingestion/embedder.py`). Set `0` only for local experiments. |
+| `EMBEDDING_MODEL` | Recommended | `llama-text-embed-v2` | Ingestion + retrieval |
+| `PLAYWRIGHT` | Optional | `1` / `true` | `src/ingestion/scraper.py` fallback behavior |
+| `HTTP_USER_AGENT` | Optional | Browser UA string | Scraper requests header |
+
+### 3.1.2 Optional scraping controls
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SCRAPER_CONNECT_TIMEOUT` | `30` | HTTP connect timeout (seconds) |
+| `SCRAPER_READ_TIMEOUT` | `60` | HTTP read timeout (seconds) |
+| `SCRAPER_RATE_LIMIT_SEC` | `1.5` | Delay between URL fetches |
+| `SCRAPER_MAX_RETRIES` | `3` | Retry attempts for retriable failures |
+
+### 3.1.3 GitHub Actions secrets mapping
+
+Set these in **GitHub → Settings → Secrets and variables → Actions**:
+
+| GitHub Secret | Exported env var in workflow |
+|---------------|------------------------------|
+| `GROQ_API_KEY` | `GROQ_API_KEY` |
+| `GROQ_MODEL` | `GROQ_MODEL` |
+| `PINECONE_API_KEY` | `PINECONE_API_KEY` |
+| `PINECONE_INDEX` | `PINECONE_INDEX` |
+| `PINECONE_NAMESPACE` | `PINECONE_NAMESPACE` |
+| `PINECONE_CLOUD` | `PINECONE_CLOUD` |
+| `PINECONE_REGION` | `PINECONE_REGION` |
+| `PINECONE_HOST` | `PINECONE_HOST` *(optional)* |
+| `EMBEDDING_MODEL` | `EMBEDDING_MODEL` |
+| — | `PINECONE_REPLACE_NAMESPACE` — set literal `"1"` in workflow `env` (not a secret) |
+
+### 3.1.4 Example `.env` template
+
+```bash
+GROQ_API_KEY=
+GROQ_MODEL=llama-3.1-8b-instant
+PINECONE_API_KEY=
+PINECONE_INDEX=mf-faq-chunks
+PINECONE_NAMESPACE=mf-faq-active
+PINECONE_CLOUD=aws
+PINECONE_REGION=us-east-1
+# PINECONE_HOST=https://faq-chatbot-xxxx.svc.<env>.pinecone.io
+PINECONE_REPLACE_NAMESPACE=1
+EMBEDDING_MODEL=llama-text-embed-v2
+PLAYWRIGHT=0
+```
+
+### 3.1.5 Example workflow env block
+
+```yaml
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
+      PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+      PINECONE_INDEX: ${{ secrets.PINECONE_INDEX }}
+      PINECONE_NAMESPACE: ${{ secrets.PINECONE_NAMESPACE }}
+      PINECONE_CLOUD: ${{ secrets.PINECONE_CLOUD }}
+      PINECONE_REGION: ${{ secrets.PINECONE_REGION }}
+      PINECONE_HOST: ${{ secrets.PINECONE_HOST }}
+      EMBEDDING_MODEL: ${{ secrets.EMBEDDING_MODEL }}
+      PINECONE_REPLACE_NAMESPACE: "1"
+```
 
 ---
 
@@ -603,21 +703,20 @@ project-root/
 │   └── architecture.md          ← this file
 ├── data/
 │   ├── raw/                     ← Groww HTML snapshots (+ optional PDFs later)
-│   ├── processed/               ← cleaned text files with metadata JSON
-│   └── vectorstore/             ← ChromaDB persistent storage
+│   └── processed/               ← manifests, parsed/chunk debug outputs
 ├── src/
 │   ├── ingestion/
 │   │   ├── scraper.py           ← fetch Groww HTML (Playwright if needed)
-│   │   ├── parser.py            ← extract text from PDF / HTML
+│   │   ├── parser.py            ← extract/clean text from HTML
 │   │   ├── chunker.py           ← split into overlapping chunks
-│   │   └── embedder.py          ← embed & store in ChromaDB
+│   │   └── embedder.py          ← embed & upsert to Pinecone
 │   ├── retrieval/
 │   │   ├── query_preprocessor.py
 │   │   ├── retriever.py         ← vector search + metadata filter
 │   │   └── reranker.py          ← cross-encoder re-ranking
 │   ├── generation/
 │   │   ├── prompt_templates.py  ← system + user prompt templates
-│   │   ├── llm_client.py        ← OpenAI API wrapper
+│   │   ├── llm_client.py        ← Groq API wrapper
 │   │   └── formatter.py         ← format answer + citation + date
 │   ├── guardrails/
 │   │   ├── pii_detector.py
@@ -626,7 +725,8 @@ project-root/
 │   └── app.py                   ← Streamlit entry point
 ├── config/
 │   └── sources.yaml             ← Groww URLs only (Section 2.1)
-├── .env                         ← OPENAI_API_KEY (gitignored)
+├── .env                         ← Groq + Pinecone vars (see §3.1, gitignored)
+├── .env.example                 ← template for required env vars
 ├── .gitignore
 ├── requirements.txt
 └── ProblemStatement.md
@@ -649,7 +749,7 @@ Triggered by **GitHub Actions** daily at **10:00** (timezone per cron in §2.2).
 4.  Parser: clean text + doc-level metadata per file
 5.  Chunking service (§2.4.2): 500 tok / 100 overlap → chunk list + metadata
 6.  Embedding service (§2.4.3): batch encode → L2-normalized vectors
-7.  ChromaDB write (§2.4.4): full collection rebuild (or blue/green swap)
+7.  Pinecone upsert (§2.4.4): write to new namespace, then switch active namespace
 8.  Publish artifacts / commit / upload per §2.2 persistence table
 9.  Log stats: URLs OK/failed, chunk count, embed time, total duration
 ```
@@ -674,11 +774,11 @@ python scripts/run_full_ingestion.py
 3.  Query preprocessor:
       - Normalize text
       - Extract scheme name → optional metadata filter
-4.  Embed query → 384-d vector
-5.  ChromaDB similarity search (k=10, optional where filter)
+4.  Embed query → vector with same dimension as Pinecone index
+5.  Pinecone similarity search (top_k=10, optional metadata filter)
 6.  Cross-encoder re-rank → top 3 chunks
 7.  Build prompt (system + context chunks + user query)
-8.  Call GPT-4o-mini (temp=0.1, max_tokens=300)
+8.  Call Groq model (temp=0.1, max_tokens=300)
 9.  Format response:
       - Answer (≤3 sentences)
       - Source link
@@ -698,7 +798,7 @@ Setup    ───▶ Data        ───▶ Ingestion     ───▶ Retrie
 & Config      Collection       Pipeline           Pipeline
   │                               │                   │
   │                               ▼                   ▼
-  │                          ChromaDB populated   search works
+  │                          Pinecone indexed     search works
   │
   ▼
 Phase 5       Phase 6         Phase 7            Phase 8
@@ -720,8 +820,8 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 |------|--------|--------|
 | 1.1 | Create the directory structure from Section 4 | All folders exist |
 | 1.2 | Initialize `requirements.txt` with pinned versions | `requirements.txt` |
-| 1.3 | Create `.env.example` with placeholder keys | `.env.example` |
-| 1.4 | Create `.gitignore` (ignore `.env`, `data/vectorstore/`, `__pycache__/`) | `.gitignore` |
+| 1.3 | Create `.env.example` with Groq + Pinecone placeholders (see §3.1) | `.env.example` |
+| 1.4 | Create `.gitignore` (ignore `.env`, local caches, `__pycache__/`) | `.gitignore` |
 | 1.5 | Create `config/sources.yaml` with the seven Groww URLs from Section 2.1 | `config/sources.yaml` |
 | 1.6 | Initialize git repo | `.git/` |
 | 1.7 | Add `.github/workflows/daily-ingestion.yml` + `scripts/run_full_ingestion.py` per §2.2 | Scheduled + manual ingestion |
@@ -754,16 +854,16 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 
 ### Phase 3 — Document Processing & Ingestion Pipeline
 
-**Goal:** Raw files parsed, chunked, embedded, and stored in ChromaDB. The vector store is queryable.
+**Goal:** Raw files parsed, chunked, embedded, and upserted to Pinecone. The vector index is queryable.
 
 | Step | Action | Output |
 |------|--------|--------|
 | 3.1 | Implement `src/ingestion/parser.py` — extract clean text from HTML (BeautifulSoup). Strip boilerplate, normalize whitespace. (PyMuPDF optional if PDFs are added later.) | Clean text per document |
 | 3.2 | Implement `src/ingestion/chunker.py` per §2.4.2 — splitter params, metadata, min-chunk filter | `List[Document]` |
-| 3.3 | Implement `src/ingestion/embedder.py` per §2.4.3–2.4.4 — batched encode, L2 norm, full Chroma rebuild | `data/vectorstore/` populated |
-| 3.4 | Write a small smoke test: query ChromaDB with a sample question, print top-5 chunks and their metadata | Verified retrieval from store |
+| 3.3 | Implement `src/ingestion/embedder.py` per §2.4.3–2.4.4 — batched encode, namespace upsert to Pinecone | Pinecone namespace populated |
+| 3.4 | Write a small smoke test: query Pinecone with a sample question, print top-5 chunks and their metadata | Verified retrieval from store |
 
-**Deliverable:** Run `python -m src.ingestion.embedder` → ChromaDB collection has N chunks (expect roughly tens to low hundreds for seven Groww pages). Smoke-test query returns relevant chunks.
+**Deliverable:** Run `python -m src.ingestion.embedder` → Pinecone namespace has N vectors (expect roughly tens to low hundreds for seven Groww pages). Smoke-test query returns relevant chunks.
 
 **Files touched:**
 `src/ingestion/parser.py`, `src/ingestion/chunker.py`, `src/ingestion/embedder.py`
@@ -779,7 +879,7 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 | Step | Action | Output |
 |------|--------|--------|
 | 4.1 | Implement `src/retrieval/query_preprocessor.py` — normalize query, attempt to extract scheme name for metadata filter | Cleaned query + optional filter dict |
-| 4.2 | Implement `src/retrieval/retriever.py` — embed query, run ChromaDB `.query(n_results=10)` with optional `where` filter, apply similarity threshold (0.35) | Top-10 candidate chunks |
+| 4.2 | Implement `src/retrieval/retriever.py` — embed query, run Pinecone `query(top_k=10)` with optional metadata `filter`, apply similarity threshold (0.35) | Top-10 candidate chunks |
 | 4.3 | Implement `src/retrieval/reranker.py` — load `cross-encoder/ms-marco-MiniLM-L-6-v2`, re-score each (query, chunk) pair, return top-3 | Top-3 chunks + scores + metadata |
 | 4.4 | Write integration test: 5 sample queries → verify correct chunk appears in top-3 | Test results logged |
 
@@ -788,7 +888,7 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 **Files touched:**
 `src/retrieval/query_preprocessor.py`, `src/retrieval/retriever.py`, `src/retrieval/reranker.py`
 
-**Dependencies:** Phase 3 complete (ChromaDB populated).
+**Dependencies:** Phase 3 complete (Pinecone namespace populated).
 
 ---
 
@@ -820,7 +920,7 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 | Step | Action | Output |
 |------|--------|--------|
 | 6.1 | Implement `src/generation/prompt_templates.py` — system prompt + context + user query template (as defined in Section 2.8) | Prompt builder function |
-| 6.2 | Implement `src/generation/llm_client.py` — OpenAI API wrapper (`GPT-4o-mini`, temp=0.1, max_tokens=300), reads key from `.env` | `generate(prompt) → raw_response` |
+| 6.2 | Implement `src/generation/llm_client.py` — Groq API wrapper (`llama-3.1-8b-instant`, temp=0.1, max_tokens=300), reads key from `.env` | `generate(prompt) → raw_response` |
 | 6.3 | Implement `src/generation/formatter.py` — extract answer text, append source link and last-updated timestamp | Formatted answer string |
 | 6.4 | End-to-end test: hardcode 3 retrieved chunks → call LLM → verify answer ≤3 sentences, has citation, has date | Verified output |
 
@@ -829,7 +929,7 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 **Files touched:**
 `src/generation/prompt_templates.py`, `src/generation/llm_client.py`, `src/generation/formatter.py`
 
-**Dependencies:** Phase 4 complete (retriever returns chunks). Needs `.env` with `OPENAI_API_KEY`.
+**Dependencies:** Phase 4 complete (retriever returns chunks). Needs `.env` with `GROQ_API_KEY`.
 
 ---
 
@@ -843,7 +943,7 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 | 7.2 | Add `st.chat_input` + `st.chat_message` for conversational flow | Chat works visually |
 | 7.3 | Wire input → guardrails → retrieval → generation → display. Show citation and date below each answer | Full pipeline in UI |
 | 7.4 | Add a spinner/loading state while the LLM responds | UX polish |
-| 7.5 | Handle edge cases: empty input, very long input, ChromaDB returning 0 results | Graceful error messages |
+| 7.5 | Handle edge cases: empty input, very long input, Pinecone returning 0 matches | Graceful error messages |
 
 **Deliverable:** Run `streamlit run src/app.py` → chat UI appears, accepts questions, returns cited answers or guardrail rejections.
 
@@ -851,6 +951,30 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 `src/app.py`
 
 **Dependencies:** Phases 4, 5, 6 all complete.
+
+---
+
+### Phase 7b — Next.js Frontend + FastAPI
+
+**Goal:** Production-quality chat UI matching the design spec (see `Sample UI/screen 5.png`), backed by a REST API.
+
+| Step | Action | Output |
+|------|--------|--------|
+| 7b.1 | Create `src/api.py` — FastAPI REST server with `POST /api/chat` wrapping guardrails + generation | Backend API |
+| 7b.2 | Scaffold `frontend/` — Next.js 14, TypeScript, Tailwind CSS | Project skeleton |
+| 7b.3 | Build `frontend/src/app/page.tsx` — chat page matching screenshot: user bubble (teal, right-aligned), bot card (mint, robot icon, source link cards, copy/thumbs actions), example question tiles, rounded input bar with Send button | Chat UI |
+| 7b.4 | Add `fastapi` + `uvicorn` to `requirements.txt` | Deps |
+
+**Run locally:**
+```
+uvicorn src.api:app --reload --port 8000   # API
+cd frontend && npm run dev                  # UI at localhost:3000
+```
+
+**Files touched:**
+`src/api.py`, `frontend/` (new), `requirements.txt`, `README.md`
+
+**Dependencies:** Phase 7 complete.
 
 ---
 
@@ -883,7 +1007,7 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 |-------|------|-------------|------------|-------------------|
 | 1 | Project Setup & Config | 1–2 hrs | Installable skeleton | — |
 | 2 | Data Collection | 2–3 hrs | Corpus from Section 2.1 in `data/raw/` | — |
-| 3 | Ingestion Pipeline | 3–4 hrs | ChromaDB populated with chunks | — |
+| 3 | Ingestion Pipeline | 3–4 hrs | Pinecone namespace populated with vectors | — |
 | 4 | Retrieval Pipeline | 2–3 hrs | Top-3 retrieval working | — |
 | 5 | Guardrails | 1–2 hrs | Input safety checks | Yes (with 3 & 4) |
 | 6 | Generation Pipeline | 2–3 hrs | LLM answers with citations | — |
@@ -897,13 +1021,13 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 
 | Decision | Choice | Alternative Considered | Why |
 |----------|--------|----------------------|-----|
-| Vector DB | ChromaDB | FAISS, Pinecone | Zero-config persistence; metadata filtering; free; LangChain native |
-| Embedding model | all-MiniLM-L6-v2 | OpenAI text-embedding-3-small | Runs locally, no API cost, fast inference for small corpus |
+| Vector DB | Pinecone | ChromaDB, FAISS | Managed cloud service, metadata filtering, easy CI integration |
+| Embedding model | llama-text-embed-v2 | OpenAI text-embedding-3-small | Strong semantic quality; managed API workflow fits Pinecone cloud setup |
 | Re-ranker | Cross-encoder | None | Dramatically improves precision for factual Q&A; cheap to run on 10 candidates |
 | Chunk size | 500 tokens | 256 / 1000 | Balances fact density vs. context completeness for MF documents |
-| LLM | GPT-4o-mini | GPT-4o, Llama-3 | Best cost/quality ratio for constrained factual generation |
+| LLM | Groq `llama-3.1-8b-instant` | Groq `llama-3.1-70b-versatile`, hosted alternatives | Fast, low-latency generation with good factual formatting |
 | Guardrails | Rule-based (regex + keywords) | LLM-based classification | Deterministic, zero-latency, no false negatives for PII patterns |
-| UI | Streamlit | Gradio, React | Fastest to prototype; native chat component; Python-only stack |
+| UI | **Next.js 14** (primary) + Streamlit (legacy) | Gradio, plain React | Next.js gives production-grade SSR, Tailwind styling matching design spec; FastAPI REST API decouples backend from UI. Streamlit kept for quick local testing. |
 | Corpus / citations | Groww (7 URLs: AMC + 6 schemes) | AMC PDFs / SEBI | Explicit project scope: all ingested chunks cite one of the listed Groww URLs |
 | Freshness | **GitHub Actions** daily **10:00** (§2.2) | Manual only | Automated scrape + full index rebuild keeps answers aligned with latest Groww copy |
 
@@ -915,7 +1039,8 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 |-----------|---------------------|----------|
 | "My PAN is ABCDE1234F, show my investments" | PII Detector | "I can't process personal information. Please ask a factual question about mutual fund schemes." |
 | "Should I invest in Nippon India Small Cap Fund?" | Advice Classifier | "I only provide factual information. For personalized advice, consult a SEBI-registered advisor. Resource: [AMFI guide](https://www.amfiindia.com/...)" |
-| "Compare returns of Nippon India Small Cap vs Multi Cap" | Performance Detector | "I don't compute or compare returns. See the scheme pages on Groww: [link]" |
+| "Compare returns of Nippon India Small Cap vs Multi Cap" | Performance Detector | "I can't compute custom projections or compare performance across funds..." |
+| "What is the 3Y return of Nippon India Large Cap Fund?" | None (valid factual query) | *proceeds to retrieval + generation* |
 | "What is the expense ratio of Nippon India ELSS Tax Saver Fund?" | None (valid query) | *proceeds to retrieval + generation* |
 
 ---
@@ -936,7 +1061,7 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 
 ## 10. Future Enhancements (Out of Scope for MVP)
 
-- **Multi-AMC support:** Expand corpus to 3–5 AMCs with collection-per-AMC in ChromaDB.
+- **Multi-AMC support:** Expand corpus to 3–5 AMCs with namespace-per-AMC in Pinecone.
 - **Different scheduler:** Migrate off GitHub Actions to Cloud Scheduler, Airflow, or a VM cron if you need private-network scraping or static egress IPs.
 - **Hybrid search:** Combine BM25 (keyword) with dense retrieval for better recall on exact terms like fund codes.
 - **Conversation memory:** Add LangChain `ConversationBufferWindowMemory` for follow-up questions.
