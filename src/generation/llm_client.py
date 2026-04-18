@@ -125,11 +125,10 @@ def _deterministic_fallback(query: str, chunks: list[dict[str, Any]]) -> dict[st
     sources = [row.get("metadata", {}).get("source_url", "") for row in scoped_chunks if row.get("metadata")]
     dates = [row.get("metadata", {}).get("last_scraped_date", "") for row in scoped_chunks if row.get("metadata")]
 
-    answer = _extract_returns_answer(query, contexts)
+    answer, returns_win_row = _extract_returns_answer(query, scoped_chunks)
     last_updated: str | None = None
     if answer:
-        summary_row = _first_row_with_text_prefix(scoped_chunks, "annualised returns (cagr)")
-        last_updated = _chunk_meta_date(summary_row) or _max_meta_dates(scoped_chunks)
+        last_updated = _chunk_meta_date(returns_win_row) or _max_meta_dates(scoped_chunks)
     if not answer:
         answer = _extract_holdings_answer(query, contexts)
         if answer:
@@ -299,6 +298,51 @@ def _parse_returns_summary(text: str) -> dict[str, float]:
     return values
 
 
+def _parse_groww_hero_returns(text: str) -> dict[str, float]:
+    """3Y figure shown next to '3Y annualised' on Groww scheme pages (not in structured JSONL lines)."""
+    out: dict[str, float] = {}
+    m = re.search(r"([+-]?\d+(?:\.\d+)?)\s*%\s*3Y\s*annualised", text, flags=re.IGNORECASE)
+    if m:
+        out["3y"] = float(m.group(1))
+    return out
+
+
+def _parse_return_values_from_chunk(text: str) -> dict[str, float]:
+    merged = dict(_parse_returns_summary(text))
+    merged.update(_parse_groww_hero_returns(text))
+    return merged
+
+
+def _best_returns_values_and_row(
+    scoped_chunks: list[dict[str, Any]],
+    required_periods: set[str],
+) -> tuple[dict[str, float] | None, dict[str, Any] | None]:
+    """Prefer the chunk whose scraped date is latest among those containing all required periods."""
+    candidates: list[tuple[dict[str, float], str, str, dict[str, Any]]] = []
+    for row in scoped_chunks:
+        text = str(row.get("text", "") or "")
+        if not text.strip():
+            continue
+        meta = row.get("metadata") or {}
+        date = str(meta.get("last_scraped_date", "") or "").strip()
+        doc_type = str(meta.get("doc_type", "") or "").strip()
+        vals = _parse_return_values_from_chunk(text)
+        if not vals or not required_periods.issubset(vals.keys()):
+            continue
+        candidates.append((vals, date, doc_type, row))
+    if not candidates:
+        return None, None
+
+    def rank(item: tuple[dict[str, float], str, str, dict[str, Any]]) -> tuple[str, int]:
+        _vals, date, doc_type, _row = item
+        d = date or "1970-01-01"
+        prefer_page = 1 if doc_type != "structured_returns_summary" else 0
+        return (d, prefer_page)
+
+    best_vals, _d, _t, best_row = max(candidates, key=rank)
+    return best_vals, best_row
+
+
 def _format_return_value(period: str, value: float) -> str:
     sign = "+" if value >= 0 else ""
     label_map = {
@@ -321,52 +365,73 @@ def _format_return_value(period: str, value: float) -> str:
     return f"{label} is {sign}{value:.2f}%."
 
 
-def _extract_returns_answer(query: str, contexts: list[str]) -> str | None:
+def _extract_returns_answer(
+    query: str, scoped_chunks: list[dict[str, Any]]
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Pick return numbers from the freshest chunk (Pinecone text) over stale returns_records.jsonl."""
     if not _is_returns_query(query):
-        return None
-    summary_text = None
-    for text in contexts:
-        if text.lower().startswith("annualised returns (cagr)"):
-            summary_text = text
-            break
-    if not summary_text:
-        return None
+        return None, None
 
-    values = _parse_returns_summary(summary_text)
-    if not values:
-        return None
-
-    periods = _detect_periods(query)
     lowered = query.lower()
-    # If query doesn't specify a period, prefer the 3Y annualised CAGR as the canonical answer.
-    if not periods:
-        if "cagr" in lowered or "annualised" in lowered or "annualized" in lowered:
-            periods = ["3y"]
-        else:
-            # Default: return a concise multi-period summary.
-            preferred = ["1y", "3y", "5y", "10y", "all"]
-            lines = []
-            for p in preferred:
-                if p in values:
-                    sign = "+" if values[p] >= 0 else ""
-                    lines.append(f"- {p.upper()}: {sign}{values[p]:.2f}%")
-            if not lines:
-                return None
-            return "Annualised returns (CAGR) from Groww:\n" + "\n".join(lines)
+    periods = _detect_periods(query)
+    if not periods and ("cagr" in lowered or "annualised" in lowered or "annualized" in lowered):
+        periods = ["3y"]
 
-    answers: list[str] = []
-    missing: list[str] = []
-    for period in periods:
+    if periods:
+        values, winner = _best_returns_values_and_row(scoped_chunks, set(periods))
+        if values and winner:
+            answers: list[str] = []
+            missing: list[str] = []
+            for period in periods:
+                if period in values:
+                    answers.append(_format_return_value(period, values[period]))
+                else:
+                    missing.append(period.upper())
+            if answers:
+                text = " ".join(answers)
+                if missing:
+                    text += f" (No data available for: {', '.join(missing)}.)"
+                return text, winner
+
+    summary_row = _first_row_with_text_prefix(scoped_chunks, "annualised returns (cagr)")
+    if not summary_row:
+        return None, None
+    summary_text = str(summary_row.get("text", "") or "")
+    values = _parse_return_values_from_chunk(summary_text)
+    if not values:
+        return None, None
+
+    if not periods and "cagr" not in lowered and "annualised" not in lowered and "annualized" not in lowered:
+        preferred = ["1y", "3y", "5y", "10y", "all"]
+        lines = []
+        for p in preferred:
+            if p in values:
+                sign = "+" if values[p] >= 0 else ""
+                lines.append(f"- {p.upper()}: {sign}{values[p]:.2f}%")
+        if lines:
+            return (
+                "Annualised returns (CAGR) from Groww:\n" + "\n".join(lines),
+                summary_row,
+            )
+
+    periods2 = _detect_periods(query)
+    if not periods2 and ("cagr" in lowered or "annualised" in lowered or "annualized" in lowered):
+        periods2 = ["3y"]
+    if not periods2:
+        return None, None
+    answers = []
+    missing = []
+    for period in periods2:
         if period in values:
             answers.append(_format_return_value(period, values[period]))
         else:
             missing.append(period.upper())
     if not answers:
-        return None
+        return None, None
     text = " ".join(answers)
     if missing:
         text += f" (No data available for: {', '.join(missing)}.)"
-    return text
+    return text, summary_row
 
 
 def _extract_holdings_answer(query: str, contexts: list[str]) -> str | None:
@@ -409,12 +474,11 @@ def _generate_answer_payload(query: str, chunks: list[dict[str, Any]]) -> dict[s
         return _deterministic_fallback(query, chunks)
     scoped_chunks = _scope_chunks_to_scheme(query, chunks)
 
-    # Deterministic path for returns / CAGR queries — uses structured returns summary.
+    # Deterministic path for returns / CAGR queries — prefers freshest chunk (Pinecone) vs jsonl.
     if _is_returns_query(query):
-        returns_answer = _extract_returns_answer(query, [row.get("text", "") for row in scoped_chunks])
+        returns_answer, returns_row = _extract_returns_answer(query, scoped_chunks)
         if returns_answer:
-            summary_row = _first_row_with_text_prefix(scoped_chunks, "annualised returns (cagr)")
-            meta = (summary_row or {}).get("metadata", {}) or {}
+            meta = (returns_row or {}).get("metadata", {}) or {}
             source_url = str(meta.get("source_url", "") or "").strip() or next(
                 (
                     str(row.get("metadata", {}).get("source_url", "") or "").strip()
@@ -423,7 +487,7 @@ def _generate_answer_payload(query: str, chunks: list[dict[str, Any]]) -> dict[s
                 ),
                 DEFAULT_SOURCE,
             )
-            last_updated = _chunk_meta_date(summary_row) or _max_meta_dates(scoped_chunks)
+            last_updated = _chunk_meta_date(returns_row) or _max_meta_dates(scoped_chunks)
             return {
                 "answer": returns_answer,
                 "source_url": source_url or DEFAULT_SOURCE,
