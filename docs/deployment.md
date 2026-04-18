@@ -268,16 +268,34 @@ project with **no Next.js routes** and the edge returns a platform **404**.
 
 The frontend is configured with **`output: 'export'`** in `frontend/next.config.mjs`,
 so `next build` writes a static site to **`frontend/out/`** (including `index.html`).
-That is easier for Vercel to serve than a mis-detected server build.
+Vercel must treat the app as **Next.js** so it publishes `out/`, not a generic folder.
 
-**Fix:**
+#### Wrong: Framework Preset = “Other” (common cause of persistent 404)
 
-1. Vercel → your project → **Settings** → **Build & Deployment** → **Root Directory** →
-   **Edit** → set to **`frontend`** → Save.
-2. Confirm **Framework Preset** is **Next.js** (not *Static Site* or *Other*).
-3. Under build settings, **clear** any custom **Output Directory** you may have set
-   (leave the default empty so Vercel uses the static export `out/` folder).
-4. Trigger **Deployments → … → Redeploy** (optionally “Clear cache and redeploy”).
+If **Framework Preset** is **Other**, Vercel’s default output is **`public/`** (if that
+folder exists) or **`.`** — not Next’s **`out/`** directory. This project has
+`frontend/public/` (static assets only, **no** `index.html`), so the deployed site has
+**no homepage** → **`404: NOT_FOUND`** even when `npm run build` succeeds.
+
+**Fix:** open **Settings → General → Framework Settings** (or the import wizard’s
+framework step) and set **Framework Preset** to **Next.js**, not *Other*. Leave
+**Output Directory** overrides **off** (empty). Save, then redeploy.
+
+The repo includes **`frontend/vercel.json`** with `"framework": "nextjs"` so new
+links pick up the right preset when Vercel reads config from the app root.
+
+#### Node.js version
+
+Use **Node.js 20.x** on Vercel (Project Settings → Node.js Version). **24.x** is
+usually unnecessary for Next 14 and can surface avoidable toolchain issues.
+
+#### Checklist
+
+1. **Root Directory** = **`frontend`** (you already have this correct).
+2. **Framework Preset** = **Next.js** (not *Other*).
+3. **Output Directory** override = **off** / empty (do not force `public` or `.next`).
+4. **Node.js** = **20.x** (recommended).
+5. Trigger **Deployments → … → Redeploy** (optionally “Clear cache and redeploy”).
 
 **Alternative:** create a **Static Site** project instead of a Web Service, with
 **Root directory** `frontend`, **Build command** `npm install && npm run build`, and
