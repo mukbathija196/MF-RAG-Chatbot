@@ -126,10 +126,19 @@ def _deterministic_fallback(query: str, chunks: list[dict[str, Any]]) -> dict[st
     dates = [row.get("metadata", {}).get("last_scraped_date", "") for row in scoped_chunks if row.get("metadata")]
 
     answer = _extract_returns_answer(query, contexts)
+    last_updated: str | None = None
+    if answer:
+        summary_row = _first_row_with_text_prefix(scoped_chunks, "annualised returns (cagr)")
+        last_updated = _chunk_meta_date(summary_row) or _max_meta_dates(scoped_chunks)
     if not answer:
         answer = _extract_holdings_answer(query, contexts)
+        if answer:
+            holdings_row = _first_row_with_text_prefix(scoped_chunks, "top holdings for")
+            last_updated = _chunk_meta_date(holdings_row) or _max_meta_dates(scoped_chunks)
     if not answer:
         answer = _extract_metric_answer(query, merged_context)
+        if answer:
+            last_updated = _max_meta_dates(scoped_chunks)
     if not answer:
         if contexts:
             preview = " ".join(contexts[0].splitlines()[:2])[:260]
@@ -141,7 +150,8 @@ def _deterministic_fallback(query: str, chunks: list[dict[str, Any]]) -> dict[st
             )
 
     source_url = next((src for src in sources if src), DEFAULT_SOURCE)
-    last_updated = next((item for item in dates if item), None)
+    if last_updated is None:
+        last_updated = next((item for item in dates if item), None) or _max_meta_dates(scoped_chunks)
     return {
         "answer": answer,
         "source_url": source_url,
@@ -171,6 +181,26 @@ def _scope_chunks_to_scheme(query: str, chunks: list[dict[str, Any]]) -> list[di
         if str(row.get("metadata", {}).get("scheme_name", "")).strip() == str(matched_scheme).strip()
     ]
     return filtered or chunks
+
+
+def _chunk_meta_date(row: dict[str, Any] | None) -> str:
+    if not row:
+        return ""
+    return str(row.get("metadata", {}).get("last_scraped_date", "") or "").strip()
+
+
+def _max_meta_dates(rows: list[dict[str, Any]]) -> str | None:
+    dates = [_chunk_meta_date(r) for r in rows if r.get("metadata")]
+    dates = [d for d in dates if d]
+    return max(dates) if dates else None
+
+
+def _first_row_with_text_prefix(rows: list[dict[str, Any]], prefix: str) -> dict[str, Any] | None:
+    p = prefix.lower()
+    for row in rows:
+        if str(row.get("text", "") or "").lower().startswith(p):
+            return row
+    return None
 
 
 def _extract_metric_answer(query: str, context: str) -> str | None:
@@ -383,14 +413,17 @@ def _generate_answer_payload(query: str, chunks: list[dict[str, Any]]) -> dict[s
     if _is_returns_query(query):
         returns_answer = _extract_returns_answer(query, [row.get("text", "") for row in scoped_chunks])
         if returns_answer:
-            source_url = next(
-                (row.get("metadata", {}).get("source_url", "") for row in scoped_chunks if row.get("metadata")),
+            summary_row = _first_row_with_text_prefix(scoped_chunks, "annualised returns (cagr)")
+            meta = (summary_row or {}).get("metadata", {}) or {}
+            source_url = str(meta.get("source_url", "") or "").strip() or next(
+                (
+                    str(row.get("metadata", {}).get("source_url", "") or "").strip()
+                    for row in scoped_chunks
+                    if row.get("metadata")
+                ),
                 DEFAULT_SOURCE,
             )
-            last_updated = next(
-                (row.get("metadata", {}).get("last_scraped_date", "") for row in scoped_chunks if row.get("metadata")),
-                None,
-            )
+            last_updated = _chunk_meta_date(summary_row) or _max_meta_dates(scoped_chunks)
             return {
                 "answer": returns_answer,
                 "source_url": source_url or DEFAULT_SOURCE,
@@ -402,14 +435,17 @@ def _generate_answer_payload(query: str, chunks: list[dict[str, Any]]) -> dict[s
     if _is_holdings_query(query):
         structured_answer = _extract_holdings_answer(query, [row.get("text", "") for row in scoped_chunks])
         if structured_answer:
-            source_url = next(
-                (row.get("metadata", {}).get("source_url", "") for row in scoped_chunks if row.get("metadata")),
+            holdings_row = _first_row_with_text_prefix(scoped_chunks, "top holdings for")
+            meta = (holdings_row or {}).get("metadata", {}) or {}
+            source_url = str(meta.get("source_url", "") or "").strip() or next(
+                (
+                    str(row.get("metadata", {}).get("source_url", "") or "").strip()
+                    for row in scoped_chunks
+                    if row.get("metadata")
+                ),
                 DEFAULT_SOURCE,
             )
-            last_updated = next(
-                (row.get("metadata", {}).get("last_scraped_date", "") for row in scoped_chunks if row.get("metadata")),
-                None,
-            )
+            last_updated = _chunk_meta_date(holdings_row) or _max_meta_dates(scoped_chunks)
             return {
                 "answer": structured_answer,
                 "source_url": source_url or DEFAULT_SOURCE,
@@ -422,13 +458,14 @@ def _generate_answer_payload(query: str, chunks: list[dict[str, Any]]) -> dict[s
         metric_answer = _extract_metric_answer(query, "\n".join(row.get("text", "") for row in scoped_chunks))
         if metric_answer:
             source_url = next(
-                (row.get("metadata", {}).get("source_url", "") for row in scoped_chunks if row.get("metadata")),
+                (
+                    str(row.get("metadata", {}).get("source_url", "") or "").strip()
+                    for row in scoped_chunks
+                    if row.get("metadata")
+                ),
                 DEFAULT_SOURCE,
             )
-            last_updated = next(
-                (row.get("metadata", {}).get("last_scraped_date", "") for row in scoped_chunks if row.get("metadata")),
-                None,
-            )
+            last_updated = _max_meta_dates(scoped_chunks)
             return {
                 "answer": metric_answer,
                 "source_url": source_url or DEFAULT_SOURCE,
