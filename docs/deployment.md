@@ -239,9 +239,9 @@ Create a new Vercel project from the same GitHub repository.
 | Setting | Value |
 |---|---|
 | Framework preset | Next.js |
-| Root directory | `frontend` |
+| Root directory | **`frontend`** (required — see §6.3.1 if you get 404) |
 | Build command | `next build` (default) |
-| Output directory | `.next` (default) |
+| Output directory | **Leave empty** — do not set a static `outputDirectory`; Vercel’s Next.js integration handles output. Setting `.next` manually can break the deployment. |
 | Install command | `npm install` (default) |
 | Node version | 20.x |
 
@@ -259,6 +259,24 @@ deploys work too.
 Pushing to `main` auto-deploys production; every PR creates a preview URL pointing
 at the same backend. Vercel assigns a permanent
 `https://<project>.vercel.app` domain.
+
+### 6.3.1 If you see `404: NOT_FOUND` on `*.vercel.app`
+
+This repo is a **monorepo**: the Next.js app lives under **`frontend/`**, not the
+repository root. If **Root Directory** is left as `.` (repo root), Vercel builds a
+project with **no Next.js routes** and the edge returns a platform **404**.
+
+**Fix:**
+
+1. Vercel → your project → **Settings** → **Build & Deployment** → **Root Directory** →
+   **Edit** → set to **`frontend`** → Save.
+2. Confirm **Framework Preset** is **Next.js** (not *Static Site* or *Other*).
+3. Under build settings, **clear** any custom **Output Directory** you may have set
+   (leave the default empty for Next.js).
+4. Trigger **Deployments → … → Redeploy** (optionally “Clear cache and redeploy”).
+
+See Vercel’s [monorepo / root directory](https://vercel.com/docs/monorepos) guidance:
+use **Edit** next to Root Directory when importing, or change it later in Settings.
 
 ### 6.4 Verification
 
