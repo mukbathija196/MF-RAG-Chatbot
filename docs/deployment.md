@@ -131,7 +131,13 @@ matching every variable in §3.1. Name them exactly as listed (case-sensitive).
 ### 5.0 Deploy with Blueprint (recommended)
 
 The repo includes [`render.yaml`](../render.yaml) at the root so you can provision the
-API without re-typing build/start commands.
+API without re-typing build/start commands. The Blueprint uses **`plan: free`** so you
+can run the API on Render’s [free web tier](https://render.com/docs/free) (idle spin-down,
+monthly free instance hours, and outbound limits apply — fine for demos and light use).
+
+If the UI still asks for a **payment method**, that is often workspace-level verification
+or an upgrade prompt; try picking **Free** explicitly in the instance-type step, or create
+the service via **New → Web Service** (not Blueprint) and choose **Free** there.
 
 1. In [Render Dashboard](https://dashboard.render.com) → **New** → **Blueprint**.
 2. Connect GitHub (if needed) and select the **repository** that contains this `render.yaml`.
@@ -161,7 +167,7 @@ the Blueprint).
 | Build command | `pip install -r requirements.txt` |
 | Start command | `uvicorn src.api:app --host 0.0.0.0 --port $PORT` |
 | Health check path | `/` |
-| Instance type | Starter (512 MB) for initial rollout; scale up if needed |
+| Instance type | **Free** (hobby) or **Starter** (paid) — Blueprint defaults to **Free**; upgrade if you hit limits ([free tier docs](https://render.com/docs/free)) |
 | Auto-deploy | On for `main` |
 
 ### 5.2 Environment variables
