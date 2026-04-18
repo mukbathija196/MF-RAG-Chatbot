@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "npx --yes http-server@14.1.1 out -p 3000 -c-1"
   },
   "dependencies": {
     "next": "^14.2.0",

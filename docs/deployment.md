@@ -241,7 +241,7 @@ Create a new Vercel project from the same GitHub repository.
 | Framework preset | Next.js |
 | Root directory | **`frontend`** (required — see §6.3.1 if you get 404) |
 | Build command | `next build` (default) |
-| Output directory | **Leave empty** — do not set a static `outputDirectory`; Vercel’s Next.js integration handles output. Setting `.next` manually can break the deployment. |
+| Output directory | **Leave empty** — this app uses Next **`output: 'export'`**, so the publishable bundle is `frontend/out/`, which Vercel picks up automatically. Do **not** point Output Directory at `.next`. |
 | Install command | `npm install` (default) |
 | Node version | 20.x |
 
@@ -266,14 +266,22 @@ This repo is a **monorepo**: the Next.js app lives under **`frontend/`**, not th
 repository root. If **Root Directory** is left as `.` (repo root), Vercel builds a
 project with **no Next.js routes** and the edge returns a platform **404**.
 
+The frontend is configured with **`output: 'export'`** in `frontend/next.config.mjs`,
+so `next build` writes a static site to **`frontend/out/`** (including `index.html`).
+That is easier for Vercel to serve than a mis-detected server build.
+
 **Fix:**
 
 1. Vercel → your project → **Settings** → **Build & Deployment** → **Root Directory** →
    **Edit** → set to **`frontend`** → Save.
 2. Confirm **Framework Preset** is **Next.js** (not *Static Site* or *Other*).
 3. Under build settings, **clear** any custom **Output Directory** you may have set
-   (leave the default empty for Next.js).
+   (leave the default empty so Vercel uses the static export `out/` folder).
 4. Trigger **Deployments → … → Redeploy** (optionally “Clear cache and redeploy”).
+
+**Alternative:** create a **Static Site** project instead of a Web Service, with
+**Root directory** `frontend`, **Build command** `npm install && npm run build`, and
+**Publish directory** `out`.
 
 See Vercel’s [monorepo / root directory](https://vercel.com/docs/monorepos) guidance:
 use **Edit** next to Root Directory when importing, or change it later in Settings.

@@ -74,6 +74,14 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+To preview the **production static bundle** locally (same output Vercel serves):
+
+```bash
+cd frontend
+npm run build
+npm start
+```
+
 ### Legacy Streamlit UI
 
 ```bash
