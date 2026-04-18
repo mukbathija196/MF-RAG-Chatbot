@@ -17,6 +17,9 @@ from src.ingestion.parser import parse_documents
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CHUNKS_PATH = REPO_ROOT / "data" / "processed" / "chunks.jsonl"
 
+# Pinecone metadata per-vector size budget; keep headroom for other keys and UTF-8.
+_CHUNK_TEXT_METADATA_MAX = 32000
+
 
 def _load_chunks() -> list[dict[str, Any]]:
     if not CHUNKS_PATH.exists():
@@ -118,11 +121,14 @@ def run_embedder(*, prepare_artifacts: bool = True) -> None:
         vectors = _embed_batch(pc, model, texts, input_type="passage")
         upserts = []
         for row, vector in zip(batch, vectors):
+            meta = dict(row["metadata"])
+            body = str(row.get("text", "") or "")
+            meta["chunk_text"] = body[:_CHUNK_TEXT_METADATA_MAX]
             upserts.append(
                 {
                     "id": row["id"],
                     "values": vector,
-                    "metadata": row["metadata"],
+                    "metadata": meta,
                 }
             )
         index.upsert(vectors=upserts, namespace=namespace)

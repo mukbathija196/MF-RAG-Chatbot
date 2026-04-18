@@ -452,7 +452,9 @@ def retrieve(
         if score < similarity_threshold or not match_id:
             continue
         chunk_row = chunk_lookup.get(match_id, {})
-        text = chunk_row.get("text", "")
+        text = str(chunk_row.get("text", "") or "").strip()
+        if not text:
+            text = str(metadata.get("chunk_text", "") or "").strip()
         if not text:
             continue
         candidates.append(
