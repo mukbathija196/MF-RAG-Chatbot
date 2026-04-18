@@ -128,9 +128,29 @@ matching every variable in §3.1. Name them exactly as listed (case-sensitive).
 
 ## 5. Backend — Render
 
-### 5.1 Service definition
+### 5.0 Deploy with Blueprint (recommended)
 
-Create a new **Web Service** in Render pointing at the repository root.
+The repo includes [`render.yaml`](../render.yaml) at the root so you can provision the
+API without re-typing build/start commands.
+
+1. In [Render Dashboard](https://dashboard.render.com) → **New** → **Blueprint**.
+2. Connect GitHub (if needed) and select the **repository** that contains this `render.yaml`.
+3. Confirm the detected **`render.yaml`** and click **Apply** (or **Connect** / **Deploy**
+   depending on UI wording).
+4. When prompted, set **secret** environment variables: `GROQ_API_KEY` and
+   `PINECONE_API_KEY`. Add **`PINECONE_HOST`** in the service Environment tab if you use
+   host-based Pinecone (recommended for serverless).
+5. Adjust **non-secret** defaults in the service **Environment** tab if your index or
+   namespace names differ from `render.yaml` (for example `PINECONE_NAMESPACE` must match
+   the namespace your GitHub Actions ingest job upserts into).
+6. Wait for the first deploy, then run the checks in §5.5.
+
+`runtime.txt` pins **Python 3.11** to align with GitHub Actions.
+
+### 5.1 Service definition (manual alternative)
+
+Create a new **Web Service** in Render pointing at the repository root (same settings as
+the Blueprint).
 
 | Setting | Value |
 |---|---|
@@ -150,6 +170,20 @@ Add every variable from §3.1 in Render → **Environment**, except ingestion-on
 flags: **`PINECONE_REPLACE_NAMESPACE` is not used by the API** (only by
 `scripts/run_full_ingestion.py` / GitHub Actions). Do **not** add
 `NEXT_PUBLIC_API_URL` here — that is a frontend-only variable.
+
+### 5.2.1 GitHub Actions artifacts and the API
+
+**No — Render (or any host) does not read workflow artifacts.** Artifacts are stored on
+GitHub for download/audit only; they are not attached to your web service.
+
+What the backend **does** use after each scheduled ingest:
+
+| Data | Updated by scheduler? | How the API sees it |
+|------|------------------------|---------------------|
+| **Vectors (chunks)** | Yes — upserted to Pinecone | **Always current** — retrieval queries Pinecone (`src/retrieval/retriever.py`). |
+| **`holdings_records.jsonl` / `returns_records.jsonl`** | Regenerated in the runner, then uploaded as an artifact | **Only what was deployed from Git** — the API loads these from `data/processed/` on disk (`RETURNS_PATH`, `HOLDINGS_PATH` in the same module). They **do not** refresh on Render when a new artifact appears unless you **redeploy** or copy those files onto the server another way. |
+
+So: **vector RAG answers track the scheduler**; **deterministic holdings/returns summaries** can lag the corpus until the app image includes fresh JSONL (e.g. trigger a Render deploy after ingest, or move structured fields into Pinecone/metadata in a future change).
 
 ### 5.3 CORS
 
