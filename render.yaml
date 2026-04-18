@@ -13,10 +13,14 @@ services:
     # https://render.com/docs/free
     plan: free
     branch: main
-    buildCommand: pip install -r requirements.txt
+    # Render defaults new services to Python 3.14+; greenlet/tiktoken need 3.11.x wheels.
+    # https://render.com/docs/python-version — PYTHON_VERSION overrides the default.
+    buildCommand: pip install --upgrade pip setuptools wheel && pip install -r requirements.txt
     startCommand: uvicorn src.api:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
       # Secrets — Render prompts for these on first apply (or set under Environment).
       - key: GROQ_API_KEY
         sync: false

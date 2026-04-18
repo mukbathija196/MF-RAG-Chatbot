@@ -151,7 +151,12 @@ the service via **New → Web Service** (not Blueprint) and choose **Free** ther
    the namespace your GitHub Actions ingest job upserts into).
 6. Wait for the first deploy, then run the checks in §5.5.
 
-`runtime.txt` pins **Python 3.11** to align with GitHub Actions.
+**Python version on Render:** New Render Python services default to **3.14.x** unless
+overridden, which breaks building **`greenlet`** and **`tiktoken`** from source. This
+repo pins **`PYTHON_VERSION=3.11.11`** in `render.yaml` and adds `.python-version` /
+`runtime.txt` so the build matches GitHub Actions. If you create the service **manually**
+(not Blueprint), set **`PYTHON_VERSION`** to **`3.11.11`** in the service Environment tab
+([Render Python version docs](https://render.com/docs/python-version)).
 
 ### 5.1 Service definition (manual alternative)
 
@@ -164,7 +169,7 @@ the Blueprint).
 | Region | Oregon (or nearest to Pinecone region) |
 | Branch | `main` |
 | Root directory | *(leave empty — repo root)* |
-| Build command | `pip install -r requirements.txt` |
+| Build command | `pip install --upgrade pip setuptools wheel && pip install -r requirements.txt` |
 | Start command | `uvicorn src.api:app --host 0.0.0.0 --port $PORT` |
 | Health check path | `/` |
 | Instance type | **Free** (hobby) or **Starter** (paid) — Blueprint defaults to **Free**; upgrade if you hit limits ([free tier docs](https://render.com/docs/free)) |
@@ -176,6 +181,9 @@ Add every variable from §3.1 in Render → **Environment**, except ingestion-on
 flags: **`PINECONE_REPLACE_NAMESPACE` is not used by the API** (only by
 `scripts/run_full_ingestion.py` / GitHub Actions). Do **not** add
 `NEXT_PUBLIC_API_URL` here — that is a frontend-only variable.
+
+Also set **`PYTHON_VERSION=3.11.11`** here if you did not use the Blueprint (or if the
+service was created before this repo pinned Python — see §5.0).
 
 ### 5.2.1 GitHub Actions artifacts and the API
 
