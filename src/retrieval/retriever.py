@@ -19,35 +19,8 @@ from src.retrieval.reranker import rerank
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "processed"
 CHUNKS_PATH = DATA_DIR / "chunks.jsonl"
 HOLDINGS_PATH = DATA_DIR / "holdings_records.jsonl"
-RETURNS_PATH = DATA_DIR / "returns_records.jsonl"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-_RETURNS_QUERY_TERMS = (
-    "return",
-    "returns",
-    "cagr",
-    "annualised",
-    "annualized",
-    "performance",
-    "past performance",
-)
-
-_PERIOD_LABELS = {
-    "1d": "1 day",
-    "1w": "1 week",
-    "1m": "1 month",
-    "3m": "3 months",
-    "6m": "6 months",
-    "9m": "9 months",
-    "1y": "1 year",
-    "2y": "2 years",
-    "3y": "3 years",
-    "4y": "4 years",
-    "5y": "5 years",
-    "7y": "7 years",
-    "10y": "10 years",
-    "all": "since inception",
-}
 _METRIC_HINTS = {
     "expense ratio": ("expense ratio", "%"),
     "exit load": ("exit load", "%"),
@@ -247,70 +220,6 @@ def _build_structured_holdings_candidates(
     return candidates
 
 
-def _is_returns_query(query: str) -> bool:
-    lowered = query.lower()
-    return any(term in lowered for term in _RETURNS_QUERY_TERMS)
-
-
-def _build_structured_returns_candidates(
-    query: str,
-    scheme_name_filter: str | None,
-) -> list[dict[str, Any]]:
-    if not _is_returns_query(query):
-        return []
-    records = _load_jsonl(RETURNS_PATH)
-    if not records:
-        return []
-
-    candidates: list[dict[str, Any]] = []
-    for row in records:
-        scheme_name = str(row.get("scheme_name", "")).strip()
-        if not scheme_name:
-            continue
-        if scheme_name_filter and scheme_name != scheme_name_filter:
-            continue
-        returns = row.get("returns") or {}
-        if not isinstance(returns, dict) or not returns:
-            continue
-
-        # Ordered printable summary so downstream regex/LLM can read cleanly.
-        ordered_periods = ["1d", "1w", "1m", "3m", "6m", "9m", "1y", "2y", "3y", "4y", "5y", "7y", "10y", "all"]
-        lines = []
-        for period in ordered_periods:
-            if period not in returns:
-                continue
-            try:
-                value = float(returns[period])
-            except (TypeError, ValueError):
-                continue
-            label = _PERIOD_LABELS.get(period, period)
-            sign = "+" if value >= 0 else ""
-            lines.append(f"- {label.title()} ({period.upper()}): {sign}{value:.2f}%")
-
-        if not lines:
-            continue
-
-        text = (
-            f"Annualised returns (CAGR) for {scheme_name} from Groww:\n"
-            + "\n".join(lines)
-            + "\nNote: 1D/1W/1M/3M/6M are simple point-to-point returns; 1Y and beyond are annualised (CAGR)."
-        )
-        candidates.append(
-            {
-                "id": f"structured-returns::{scheme_name}",
-                "score": 0.999,
-                "text": text,
-                "metadata": {
-                    "scheme_name": scheme_name,
-                    "source_url": row.get("source_url"),
-                    "doc_type": "structured_returns_summary",
-                    "last_scraped_date": row.get("last_scraped_date"),
-                },
-            }
-        )
-    return candidates
-
-
 def _matching_metric_hint(query: str) -> str | None:
     lowered = query.lower()
     for metric in _METRIC_HINTS:
@@ -467,7 +376,6 @@ def retrieve(
         )
 
     candidates.extend(_build_structured_holdings_candidates(normalized_query, matched_scheme))
-    candidates.extend(_build_structured_returns_candidates(normalized_query, matched_scheme))
     candidates = _enforce_metric_coverage(
         normalized_query,
         candidates,

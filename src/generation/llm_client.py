@@ -299,11 +299,20 @@ def _parse_returns_summary(text: str) -> dict[str, float]:
 
 
 def _parse_groww_hero_returns(text: str) -> dict[str, float]:
-    """3Y figure shown next to '3Y annualised' on Groww scheme pages (not in structured JSONL lines)."""
+    """3Y hero on Groww scheme pages (several orderings; not from returns_records.jsonl)."""
     out: dict[str, float] = {}
-    m = re.search(r"([+-]?\d+(?:\.\d+)?)\s*%\s*3Y\s*annualised", text, flags=re.IGNORECASE)
-    if m:
-        out["3y"] = float(m.group(1))
+    patterns = (
+        r"([+-]?\d+(?:\.\d+)?)\s*%\s*3Y\s*annualised",
+        r"3Y\s*annualised[^\d]{0,40}([+-]?\d+(?:\.\d+)?)\s*%",
+    )
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            try:
+                out["3y"] = float(m.group(1))
+                return out
+            except ValueError:
+                continue
     return out
 
 
@@ -333,11 +342,14 @@ def _best_returns_values_and_row(
     if not candidates:
         return None, None
 
-    def rank(item: tuple[dict[str, float], str, str, dict[str, Any]]) -> tuple[str, int]:
-        _vals, date, doc_type, _row = item
+    def rank(item: tuple[dict[str, float], str, str, dict[str, Any]]) -> tuple[str, int, float]:
+        vals, date, doc_type, row = item
         d = date or "1970-01-01"
         prefer_page = 1 if doc_type != "structured_returns_summary" else 0
-        return (d, prefer_page)
+        text = str(row.get("text", "") or "")
+        has_hero_3y = bool(_parse_groww_hero_returns(text))
+        sim = float(row.get("score", 0.0))
+        return (d, prefer_page, 1 if has_hero_3y else 0, sim)
 
     best_vals, _d, _t, best_row = max(candidates, key=rank)
     return best_vals, best_row
@@ -579,7 +591,10 @@ def _generate_answer_payload(query: str, chunks: list[dict[str, Any]]) -> dict[s
 
 def generate_answer_struct(query: str) -> dict[str, Any]:
     """Compatibility wrapper used by Streamlit app."""
-    chunks = retrieve(query, top_k=10, top_n=3, similarity_threshold=0.35)
+    if _is_returns_query(query):
+        chunks = retrieve(query, top_k=24, top_n=12, similarity_threshold=0.35)
+    else:
+        chunks = retrieve(query, top_k=10, top_n=3, similarity_threshold=0.35)
     payload = _generate_answer_payload(query, chunks)
     fallback_dates = [
         row.get("metadata", {}).get("last_scraped_date", "")
