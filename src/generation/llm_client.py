@@ -274,15 +274,26 @@ def _is_returns_query(query: str) -> bool:
     return any(term in lowered for term in _RETURNS_QUERY_TERMS)
 
 
+def _normalize_period_shorthand(lowered: str) -> str:
+    """Map '5 y', '5-y', '3 y' → '5y ', '3y ' so '5y' / '3y' aliases match."""
+    s = lowered
+    s = re.sub(r"\b(\d{1,2})\s*-\s*y\b", r"\1y ", s)
+    s = re.sub(r"\b(\d{1,2})\s+y\b", r"\1y ", s)
+    s = re.sub(r" {2,}", " ", s)
+    return s
+
+
 def _detect_periods(query: str) -> list[str]:
     lowered = query.lower()
+    variants = [lowered, _normalize_period_shorthand(lowered)]
     found: list[str] = []
-    for period, aliases in _PERIOD_ALIASES.items():
-        for alias in aliases:
-            if re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", lowered):
-                if period not in found:
-                    found.append(period)
-                break
+    for variant in variants:
+        for period, aliases in _PERIOD_ALIASES.items():
+            for alias in aliases:
+                if re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", variant):
+                    if period not in found:
+                        found.append(period)
+                    break
     return found
 
 
@@ -450,6 +461,25 @@ def _best_returns_values_and_row(
     return best_vals, best_row
 
 
+def _merge_returns_fallback(
+    scoped_chunks: list[dict[str, Any]],
+    required_periods: set[str],
+) -> tuple[dict[str, float] | None, dict[str, Any] | None]:
+    """If no single chunk has all periods, parse concatenated text (hero + historic may live in different chunks)."""
+    if not scoped_chunks:
+        return None, None
+    blob = "\n\n".join(str(r.get("text", "") or "") for r in scoped_chunks)
+    vals = _parse_return_values_from_chunk(blob)
+    if not vals or not required_periods.issubset(vals.keys()):
+        return None, None
+
+    def row_rank(r: dict[str, Any]) -> tuple[str, float]:
+        return (_chunk_meta_date(r) or "1970-01-01", float(r.get("score", 0.0)))
+
+    winner = max(scoped_chunks, key=row_rank)
+    return vals, winner
+
+
 def _format_return_value(period: str, value: float) -> str:
     sign = "+" if value >= 0 else ""
     label_map = {
@@ -485,7 +515,10 @@ def _extract_returns_answer(
         periods = ["3y"]
 
     if periods:
-        values, winner = _best_returns_values_and_row(scoped_chunks, set(periods))
+        req = set(periods)
+        values, winner = _best_returns_values_and_row(scoped_chunks, req)
+        if not values or not winner:
+            values, winner = _merge_returns_fallback(scoped_chunks, req)
         if values and winner:
             answers: list[str] = []
             missing: list[str] = []
