@@ -316,8 +316,81 @@ def _parse_groww_hero_returns(text: str) -> dict[str, float]:
     return out
 
 
+def _groww_returns_anchor_window(text: str) -> str:
+    """Narrow to calculator / historic area so we do not match random '1 year' elsewhere on the page."""
+    for marker in (r"Historic returns", r"Return calculator", r"historic returns"):
+        m = re.search(marker, text, flags=re.IGNORECASE)
+        if m:
+            return text[m.start() : m.start() + 14000]
+    return text
+
+
+def _parse_groww_historic_period_returns(text: str) -> dict[str, float]:
+    """
+    Groww 'Historic returns' / SIP calculator table: labels like '5 years' then rupee lines,
+    then the return on its own line ending with % (e.g. +\\n41.30\\n%).
+    """
+    out: dict[str, float] = {}
+    window = _groww_returns_anchor_window(text)
+    spec = (
+        ("1y", r"(?:^|\n)1\s+year\b"),
+        ("2y", r"(?:^|\n)2\s*years?\b"),
+        ("3y", r"(?:^|\n)3\s*years?\b"),
+        ("4y", r"(?:^|\n)4\s*years?\b"),
+        ("5y", r"(?:^|\n)5\s*years?\b"),
+        ("7y", r"(?:^|\n)7\s*years?\b"),
+        ("10y", r"(?:^|\n)10\s*years?\b"),
+    )
+    for key, label in spec:
+        m = re.search(
+            label + r"[\s\S]{0,600}?([+\-]?\d+(?:\.\d+)?)\s*%",
+            window,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            try:
+                out[key] = float(m.group(1))
+            except ValueError:
+                continue
+    return out
+
+
+def _parse_groww_rankings_fund_returns(text: str) -> dict[str, float]:
+    """Returns & rankings table: header row 3Y / 5Y / 10Y / All then 'Fund returns' and percent lines."""
+    out: dict[str, float] = {}
+    m4 = re.search(
+        r"Fund returns\s*\n\s*\+?([+\-]?\d+(?:\.\d+)?)%\s*\n\s*\+?([+\-]?\d+(?:\.\d+)?)%\s*\n\s*\+?([+\-]?\d+(?:\.\d+)?)%\s*\n\s*\+?([+\-]?\d+(?:\.\d+)?)%",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if m4:
+        try:
+            out["3y"] = float(m4.group(1))
+            out["5y"] = float(m4.group(2))
+            out["10y"] = float(m4.group(3))
+            out["all"] = float(m4.group(4))
+        except ValueError:
+            pass
+        return out
+    m3 = re.search(
+        r"Fund returns\s*\n\s*\+?([+\-]?\d+(?:\.\d+)?)%\s*\n\s*\+?([+\-]?\d+(?:\.\d+)?)%\s*\n\s*\+?([+\-]?\d+(?:\.\d+)?)%",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if m3:
+        try:
+            out["3y"] = float(m3.group(1))
+            out["5y"] = float(m3.group(2))
+            out["10y"] = float(m3.group(3))
+        except ValueError:
+            pass
+    return out
+
+
 def _parse_return_values_from_chunk(text: str) -> dict[str, float]:
     merged = dict(_parse_returns_summary(text))
+    merged.update(_parse_groww_rankings_fund_returns(text))
+    merged.update(_parse_groww_historic_period_returns(text))
     merged.update(_parse_groww_hero_returns(text))
     return merged
 
@@ -342,14 +415,16 @@ def _best_returns_values_and_row(
     if not candidates:
         return None, None
 
-    def rank(item: tuple[dict[str, float], str, str, dict[str, Any]]) -> tuple[str, int, float]:
+    def rank(item: tuple[dict[str, float], str, str, dict[str, Any]]) -> tuple[str, int, int, int, float]:
         vals, date, doc_type, row = item
         d = date or "1970-01-01"
         prefer_page = 1 if doc_type != "structured_returns_summary" else 0
         text = str(row.get("text", "") or "")
+        hist = _parse_groww_historic_period_returns(text)
+        hist_hits = sum(1 for p in required_periods if p in hist)
         has_hero_3y = bool(_parse_groww_hero_returns(text))
         sim = float(row.get("score", 0.0))
-        return (d, prefer_page, 1 if has_hero_3y else 0, sim)
+        return (d, prefer_page, hist_hits, 1 if has_hero_3y else 0, sim)
 
     best_vals, _d, _t, best_row = max(candidates, key=rank)
     return best_vals, best_row
