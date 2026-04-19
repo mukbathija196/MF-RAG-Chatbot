@@ -284,12 +284,20 @@ def _is_returns_query(query: str) -> bool:
 
 
 _RETURNS_RECORDS_CACHE: dict[str, dict[str, Any]] | None = None
+_RETURNS_RECORDS_MTIME: float | None = None
 
 
 def _load_returns_records() -> dict[str, dict[str, Any]]:
-    """Cache returns_records.jsonl keyed by scheme_name — authoritative per-period values."""
-    global _RETURNS_RECORDS_CACHE
-    if _RETURNS_RECORDS_CACHE is not None:
+    """Cache returns_records.jsonl keyed by scheme_name; auto-reload on file mtime change."""
+    global _RETURNS_RECORDS_CACHE, _RETURNS_RECORDS_MTIME
+    try:
+        current_mtime = RETURNS_RECORDS_PATH.stat().st_mtime if RETURNS_RECORDS_PATH.exists() else None
+    except OSError:
+        current_mtime = None
+    if (
+        _RETURNS_RECORDS_CACHE is not None
+        and current_mtime == _RETURNS_RECORDS_MTIME
+    ):
         return _RETURNS_RECORDS_CACHE
     records: dict[str, dict[str, Any]] = {}
     try:
@@ -309,6 +317,7 @@ def _load_returns_records() -> dict[str, dict[str, Any]]:
     except OSError:
         pass
     _RETURNS_RECORDS_CACHE = records
+    _RETURNS_RECORDS_MTIME = current_mtime
     return records
 
 

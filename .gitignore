@@ -1,4 +1,5 @@
 .env
+frontend/tsconfig.tsbuildinfo
 .venv/
 venv/
 __pycache__/

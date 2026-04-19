@@ -144,6 +144,8 @@ export default function Home() {
       {/* Chat area */}
       <main className="flex-1 overflow-y-auto px-4">
         <div className="max-w-3xl mx-auto space-y-5 pb-4">
+          {messages.length === 0 && !loading && <WelcomeMessage />}
+
           {messages.map((msg, i) =>
             msg.role === "user" ? (
               <UserBubble key={i} text={msg.text} />
@@ -298,6 +300,35 @@ function BotBubble({
             </button>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function WelcomeMessage() {
+  return (
+    <div className="flex items-start gap-2.5 pt-2">
+      <div className="flex-shrink-0 mt-0.5 select-none" aria-hidden>
+        <img
+          src="/welcome-icon.svg"
+          alt=""
+          className="w-8 h-8"
+          onError={(e) => {
+            (e.target as HTMLImageElement).style.display = "none";
+          }}
+        />
+      </div>
+      <div className="bg-gradient-to-br from-[#e6f5ef] to-[#dff0ec] border border-emerald-100 rounded-2xl px-5 py-4 max-w-xl shadow-sm">
+        <p className="text-[13px] text-gray-700 leading-relaxed">
+          <span className="font-semibold text-gray-800">
+            Welcome! I&apos;m your Mutual Fund Assistant.
+          </span>{" "}
+          Ask me about Nippon India mutual fund schemes, including fund
+          details, AUM, Current NAV, holdings, sector allocation, expense
+          ratio, exit load, benchmark, and historical returns. I answer using
+          source-based information and do not provide investment advice or
+          future predictions.
+        </p>
       </div>
     </div>
   );
