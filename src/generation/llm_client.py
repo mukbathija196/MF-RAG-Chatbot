@@ -299,54 +299,74 @@ def _parse_returns_summary(text: str) -> dict[str, float]:
 
 
 def _parse_groww_hero_returns(text: str) -> dict[str, float]:
-    """3Y hero on Groww scheme pages (several orderings; not from returns_records.jsonl)."""
+    """Headline % next to 3Y/5Y annualised on Groww scheme pages (not SIP table)."""
     out: dict[str, float] = {}
-    patterns = (
+    for pat in (
         r"([+-]?\d+(?:\.\d+)?)\s*%\s*3Y\s*annualised",
         r"3Y\s*annualised[^\d]{0,40}([+-]?\d+(?:\.\d+)?)\s*%",
-    )
-    for pat in patterns:
+    ):
         m = re.search(pat, text, flags=re.IGNORECASE | re.DOTALL)
         if m:
             try:
                 out["3y"] = float(m.group(1))
-                return out
+                break
+            except ValueError:
+                continue
+    for pat in (
+        r"([+-]?\d+(?:\.\d+)?)\s*%\s*5Y\s*annualised",
+        r"5Y\s*annualised[^\d]{0,40}([+-]?\d+(?:\.\d+)?)\s*%",
+    ):
+        m = re.search(pat, text, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            try:
+                out["5y"] = float(m.group(1))
+                break
             except ValueError:
                 continue
     return out
 
 
 def _groww_returns_anchor_window(text: str) -> str:
-    """Narrow to calculator / historic area so we do not match random '1 year' elsewhere on the page."""
-    for marker in (r"Historic returns", r"Return calculator", r"historic returns"):
-        m = re.search(marker, text, flags=re.IGNORECASE)
-        if m:
-            return text[m.start() : m.start() + 14000]
+    """Narrow to the SIP calculator table so we do not match random 'historic returns' copy or holdings %."""
+    m = re.search(r"Historic returns\s*\n\s*Returns\b", text, flags=re.IGNORECASE)
+    if m:
+        return text[m.start() : m.start() + 16000]
+    m = re.search(r"Historic returns\b", text, flags=re.IGNORECASE)
+    if m:
+        return text[m.start() : m.start() + 16000]
+    m = re.search(r"Return calculator\b", text, flags=re.IGNORECASE)
+    if m:
+        return text[m.start() : m.start() + 16000]
     return text
 
 
 def _parse_groww_historic_period_returns(text: str) -> dict[str, float]:
     """
-    Groww 'Historic returns' / SIP calculator table: labels like '5 years' then rupee lines,
-    then the return on its own line ending with % (e.g. +\\n41.30\\n%).
+    Groww SIP calculator rows: '5 years' then lines starting with ₹, then return line ending in %.
+    Must require ₹ after the label — otherwise a lazy match can grab the first % in Holdings (e.g. 1.30%
+    from a stock line) or a 1D hero value.
     """
     out: dict[str, float] = {}
     window = _groww_returns_anchor_window(text)
+    m_hold = re.search(r"\nHoldings\s*\(", window, flags=re.IGNORECASE)
+    if m_hold:
+        window = window[: m_hold.start()]
     spec = (
-        ("1y", r"(?:^|\n)1\s+year\b"),
-        ("2y", r"(?:^|\n)2\s*years?\b"),
-        ("3y", r"(?:^|\n)3\s*years?\b"),
-        ("4y", r"(?:^|\n)4\s*years?\b"),
-        ("5y", r"(?:^|\n)5\s*years?\b"),
-        ("7y", r"(?:^|\n)7\s*years?\b"),
-        ("10y", r"(?:^|\n)10\s*years?\b"),
+        ("1y", r"1\s+year"),
+        ("2y", r"2\s*years?"),
+        ("3y", r"3\s*years?"),
+        ("4y", r"4\s*years?"),
+        ("5y", r"5\s*years?"),
+        ("7y", r"7\s*years?"),
+        ("10y", r"10\s*years?"),
     )
-    for key, label in spec:
-        m = re.search(
-            label + r"[\s\S]{0,600}?([+\-]?\d+(?:\.\d+)?)\s*%",
-            window,
-            flags=re.IGNORECASE,
+    for key, core in spec:
+        pat = (
+            rf"(?:^|\n){core}\b\s*\n₹"
+            rf"[\s\S]{{0,900}}?"
+            rf"\n\+?\s*([+\-]?\d+(?:\.\d+)?)\s*%"
         )
+        m = re.search(pat, window, flags=re.IGNORECASE)
         if m:
             try:
                 out[key] = float(m.group(1))
