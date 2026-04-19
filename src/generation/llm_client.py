@@ -18,6 +18,7 @@ from src.retrieval.retriever import retrieve
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE = "https://groww.in/mutual-funds/amc/nippon-india-mutual-funds"
+RETURNS_RECORDS_PATH = REPO_ROOT / "data" / "processed" / "returns_records.jsonl"
 LOW_CONFIDENCE_PHRASES = (
     "i don't have that information",
     "not available in the context",
@@ -204,8 +205,11 @@ def _first_row_with_text_prefix(rows: list[dict[str, Any]], prefix: str) -> dict
 
 def _extract_metric_answer(query: str, context: str) -> str | None:
     lowered = query.lower()
+    period_specific_returns = _is_returns_query(query) and bool(_detect_periods(query))
     for metric, pattern in _METRIC_PATTERNS.items():
         if metric in lowered:
+            if period_specific_returns and metric in {"return", "3y", "3 year"}:
+                continue
             match = pattern.search(context)
             if match:
                 value = match.group(1).strip()
@@ -271,7 +275,111 @@ _PERIOD_ALIASES = {
 
 def _is_returns_query(query: str) -> bool:
     lowered = query.lower()
-    return any(term in lowered for term in _RETURNS_QUERY_TERMS)
+    if any(term in lowered for term in _RETURNS_QUERY_TERMS):
+        return True
+    # "what is the 5Y of <fund>?" — period alone implies a returns question.
+    if _detect_periods(query):
+        return True
+    return False
+
+
+_RETURNS_RECORDS_CACHE: dict[str, dict[str, Any]] | None = None
+
+
+def _load_returns_records() -> dict[str, dict[str, Any]]:
+    """Cache returns_records.jsonl keyed by scheme_name — authoritative per-period values."""
+    global _RETURNS_RECORDS_CACHE
+    if _RETURNS_RECORDS_CACHE is not None:
+        return _RETURNS_RECORDS_CACHE
+    records: dict[str, dict[str, Any]] = {}
+    try:
+        if RETURNS_RECORDS_PATH.exists():
+            with RETURNS_RECORDS_PATH.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    scheme = str(row.get("scheme_name", "") or "").strip()
+                    if scheme:
+                        records[scheme] = row
+    except OSError:
+        pass
+    _RETURNS_RECORDS_CACHE = records
+    return records
+
+
+def _structured_returns_answer(
+    query: str, scoped_chunks: list[dict[str, Any]]
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Answer period-specific returns from the clean per-scheme JSON extracted at ingest time."""
+    prep = preprocess_query(query)
+    scheme = prep.get("scheme_name")
+    if not scheme:
+        return None, None
+    records = _load_returns_records()
+    record = records.get(scheme)
+    if not record:
+        return None, None
+    returns = record.get("returns") or {}
+    if not isinstance(returns, dict) or not returns:
+        return None, None
+
+    lowered = query.lower()
+    periods = _detect_periods(query)
+    if not periods and ("cagr" in lowered or "annualised" in lowered or "annualized" in lowered):
+        periods = ["3y"]
+    if not periods:
+        return None, None
+
+    answers: list[str] = []
+    missing: list[str] = []
+    for period in periods:
+        if period in returns:
+            try:
+                answers.append(_format_return_value(period, float(returns[period])))
+            except (TypeError, ValueError):
+                missing.append(period.upper())
+        else:
+            missing.append(period.upper())
+    if not answers:
+        return None, None
+
+    text = " ".join(answers)
+    if missing:
+        text += f" (No data available for: {', '.join(missing)}.)"
+
+    synthetic_row = {
+        "text": "",
+        "score": 1.0,
+        "metadata": {
+            "scheme_name": scheme,
+            "source_url": record.get("source_url") or "",
+            "last_scraped_date": record.get("last_scraped_date") or "",
+            "doc_type": "structured_returns_record",
+        },
+    }
+    winner = synthetic_row
+    for row in scoped_chunks:
+        meta = row.get("metadata") or {}
+        if str(meta.get("scheme_name", "")).strip() == scheme:
+            winner = {
+                **row,
+                "metadata": {
+                    **meta,
+                    "source_url": meta.get("source_url") or record.get("source_url") or "",
+                    "last_scraped_date": (
+                        record.get("last_scraped_date")
+                        or meta.get("last_scraped_date")
+                        or ""
+                    ),
+                },
+            }
+            break
+    return text, winner
 
 
 def _normalize_period_shorthand(lowered: str) -> str:
@@ -505,9 +613,13 @@ def _format_return_value(period: str, value: float) -> str:
 def _extract_returns_answer(
     query: str, scoped_chunks: list[dict[str, Any]]
 ) -> tuple[str | None, dict[str, Any] | None]:
-    """Pick return numbers from the freshest chunk (Pinecone text) over stale returns_records.jsonl."""
+    """Prefer the clean per-scheme JSON returns; fall back to chunk parsing only if absent."""
     if not _is_returns_query(query):
         return None, None
+
+    structured_text, structured_row = _structured_returns_answer(query, scoped_chunks)
+    if structured_text:
+        return structured_text, structured_row
 
     lowered = query.lower()
     periods = _detect_periods(query)
