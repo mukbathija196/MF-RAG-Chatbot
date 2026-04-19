@@ -212,7 +212,7 @@ def _extract_metric_answer(query: str, context: str) -> str | None:
                 continue
             match = pattern.search(context)
             if match:
-                value = match.group(1).strip()
+                value = match.group(1).strip().rstrip(".")
                 if metric in {"sip", "minimum sip"}:
                     return f"Minimum SIP is ₹{value}."
                 if metric in {"minimum investment", "lumpsum"}:
@@ -234,6 +234,11 @@ def _extract_metric_answer(query: str, context: str) -> str | None:
                     return f"Risk level is {value}."
                 if metric in {"rating", "star", "stars"}:
                     return f"Groww rating is {value}/5 stars."
+                if metric == "exit load":
+                    sentence = value.strip().rstrip(".")
+                    if not sentence.lower().startswith("exit load"):
+                        sentence = f"Exit load: {sentence}"
+                    return f"{sentence}."
                 return f"{metric.title()} is {value}."
     if ("lock" in lowered or "lock-in" in lowered) and "year" in lowered:
         year_match = re.search(r"\b(\d+\s*(?:year|years))\b", context, flags=re.IGNORECASE)
@@ -703,14 +708,37 @@ def _extract_holdings_answer(query: str, contexts: list[str]) -> str | None:
     for text in contexts:
         if text.lower().startswith("top holdings for"):
             lines = [line.strip() for line in text.splitlines() if line.strip()]
+            scheme_label = ""
+            if lines:
+                first = lines[0].rstrip(":").strip()
+                if first.lower().startswith("top holdings for"):
+                    scheme_label = first[len("top holdings for") :].strip()
+                lines = lines[1:]
             if wants_sector:
                 sector_idx = next((i for i, line in enumerate(lines) if line.lower().startswith("sector weights")), None)
                 if sector_idx is not None:
                     sector_lines = [line for line in lines[sector_idx + 1 :] if line.startswith("- ")]
                     if sector_lines:
-                        return "Sector weights from the source:\n" + "\n".join(sector_lines)
-            top = lines[:6]
-            return "Top holdings from the source:\n" + "\n".join(top)
+                        header = (
+                            f"Sector weights for {scheme_label} (from source):"
+                            if scheme_label
+                            else "Sector weights from the source:"
+                        )
+                        return header + "\n" + "\n".join(sector_lines)
+            holding_lines = []
+            for line in lines:
+                if line.lower().startswith("sector weights"):
+                    break
+                holding_lines.append(line)
+            top = holding_lines[:5]
+            if not top:
+                return None
+            header = (
+                f"Top holdings for {scheme_label} (from source):"
+                if scheme_label
+                else "Top holdings from the source:"
+            )
+            return header + "\n" + "\n".join(top)
     return None
 
 
