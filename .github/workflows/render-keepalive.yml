@@ -1,0 +1,25 @@
+# Ping the Render API on a schedule so the free tier does not spin down from idle.
+# See docs/deployment.md §5.4 — set repository secret RENDER_PING_URL (e.g. https://mf-faq-api.onrender.com/)
+name: Render keepalive
+
+on:
+  schedule:
+    # Every 10 minutes — Render free tier idles after ~15 min without traffic.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render web service
+        env:
+          RENDER_PING_URL: ${{ secrets.RENDER_PING_URL }}
+        run: |
+          if [ -z "$RENDER_PING_URL" ]; then
+            echo "::warning::RENDER_PING_URL is not set in repo Secrets — skipping ping."
+            exit 0
+          fi
+          # Cold starts can take 1–2+ minutes; allow enough time for a successful response.
+          curl -fsS --max-time 300 --retry 2 --retry-delay 5 -o /dev/null "$RENDER_PING_URL"
+          echo "Ping OK: $RENDER_PING_URL"

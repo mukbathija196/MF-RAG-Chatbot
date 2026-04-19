@@ -213,10 +213,37 @@ allow_origins=[
 
 ### 5.4 Cold starts
 
-Render Starter spins down on idle. The first request after a pause can take
-10–20s. Options:
-- Upgrade to a paid plan that doesn't spin down.
-- Keep a lightweight external pinger hitting `/` every 10 minutes.
+**Free** Render web services [spin down after ~15 minutes](https://render.com/docs/free)
+without traffic. The first request after idle must wake the container (often
+30s–2+ minutes depending on import and cold paths). **Paid** instance types (e.g.
+Starter) do **not** idle-spin-down the same way; upgrading removes the need for a
+pinger.
+
+**Option A — GitHub Actions keepalive (this repo)**
+
+Workflow: [`.github/workflows/render-keepalive.yml`](../.github/workflows/render-keepalive.yml)
+runs every **10 minutes** and `GET`s your API root (same path as the Render health
+check: `/`).
+
+1. GitHub → **Settings → Secrets and variables → Actions → New repository secret**
+2. Name: **`RENDER_PING_URL`**
+3. Value: your public API base URL with trailing slash optional, e.g.
+   `https://mf-faq-api.onrender.com` or `https://mf-faq-api.onrender.com/`
+4. Confirm runs under **Actions → Render keepalive** (use **Run workflow** once to test).
+
+If `RENDER_PING_URL` is unset, the workflow skips with a warning (no failed runs).
+
+**Private repos:** scheduled workflows consume [Actions minutes](https://docs.github.com/en/billing/managing-billing-for-github-actions/about-billing-for-github-actions).
+For a demo with tight quotas, prefer **Option B**.
+
+**Option B — Third-party uptime monitor (no GitHub minutes)**
+
+Use [UptimeRobot](https://uptimerobot.com/), [Better Stack](https://betterstack.com/uptime),
+or similar: HTTP(S) check every **5–10 minutes** against `https://<service>.onrender.com/`.
+
+**Option C — Upgrade**
+
+Move the Render service to a paid plan so the instance stays warm without pings.
 
 ### 5.5 Verification
 
@@ -359,7 +386,8 @@ Minimum viable observability (can be bolted on without code changes):
 - GitHub Actions emails committer on workflow failure.
 - Render has built-in log streaming and failed-deploy notifications.
 - Vercel has built-in deploy and runtime logs.
-- Optional: add an uptime monitor (UptimeRobot, BetterStack) hitting both
+- Optional: set `RENDER_PING_URL` (§5.4) so **Render keepalive** runs, and/or add an
+  external uptime monitor (UptimeRobot, BetterStack) hitting both
   `https://<vercel>.vercel.app` and `https://<render>.onrender.com/`.
 
 ## 10. Cost at this scale
