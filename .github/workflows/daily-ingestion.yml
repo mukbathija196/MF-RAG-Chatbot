@@ -11,6 +11,10 @@ concurrency:
   group: ingestion
   cancel-in-progress: false
 
+# Needed to push refreshed data/processed back to main.
+permissions:
+  contents: write
+
 jobs:
   ingest:
     runs-on: ubuntu-latest
@@ -42,6 +46,22 @@ jobs:
 
       - name: Run full ingestion
         run: python scripts/run_full_ingestion.py
+
+      # The API reads returns/holdings/chunks JSONL from disk, so commit them: the push
+      # triggers a Render redeploy with fresh data, and the daily commit keeps the repo
+      # active so GitHub does not disable scheduled workflows after 60 days.
+      - name: Commit refreshed processed data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/processed
+          if git diff --cached --quiet; then
+            echo "No changes in data/processed — nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore(data): daily ingest refresh $(date -u +%Y-%m-%d)"
+          git pull --rebase origin main
+          git push origin HEAD:main
 
       - uses: actions/upload-artifact@v4
         with:

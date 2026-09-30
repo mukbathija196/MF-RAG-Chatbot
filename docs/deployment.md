@@ -195,9 +195,9 @@ What the backend **does** use after each scheduled ingest:
 | Data | Updated by scheduler? | How the API sees it |
 |------|------------------------|---------------------|
 | **Vectors (chunks)** | Yes — upserted to Pinecone | **Always current** — retrieval queries Pinecone (`src/retrieval/retriever.py`). |
-| **`holdings_records.jsonl` / `returns_records.jsonl`** | Regenerated in the runner, then uploaded as an artifact | **Only what was deployed from Git** — the API loads these from `data/processed/` on disk (`RETURNS_PATH`, `HOLDINGS_PATH` in the same module). They **do not** refresh on Render when a new artifact appears unless you **redeploy** or copy those files onto the server another way. |
+| **`holdings_records.jsonl` / `returns_records.jsonl` / `chunks.jsonl`** | Regenerated in the runner, then **committed to `main`** by the workflow's *Commit refreshed processed data* step | The API loads these from `data/processed/` on disk. The daily bot commit triggers a Render auto-deploy, so they refresh along with Pinecone. |
 
-So: **vector RAG answers track the scheduler**; **deterministic holdings/returns summaries** can lag the corpus until the app image includes fresh JSONL (e.g. trigger a Render deploy after ingest, or move structured fields into Pinecone/metadata in a future change).
+So both **vector RAG answers** and **deterministic holdings/returns summaries** track the scheduler. The daily commit also keeps the repo active, which stops GitHub from disabling scheduled workflows after 60 days of inactivity. If a run produces no changes in `data/processed/`, no commit is made.
 
 ### 5.3 CORS
 
