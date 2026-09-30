@@ -500,8 +500,7 @@ If user asks factual scheme-level performance (for example, “What is the 3Y re
 
 | Property | Choice |
 |----------|--------|
-| Primary model | **Groq `llama-3.1-8b-instant`** |
-| Fallback model | **Groq `llama-3.1-70b-versatile`** (quality fallback) |
+| Primary model | **Groq `openai/gpt-oss-120b`** (reasoning_effort=low) |
 | Temperature | 0.1 (near-deterministic for factual Q&A) |
 | Max output tokens | 300 |
 
@@ -615,7 +614,7 @@ Use environment variables for all runtime config that differs by environment (lo
 | Variable | Required | Example | Used in |
 |----------|----------|---------|---------|
 | `GROQ_API_KEY` | Yes (Phase 6+) | `gsk_...` | `src/generation/llm_client.py` |
-| `GROQ_MODEL` | Recommended | `llama-3.1-8b-instant` | `src/generation/llm_client.py` |
+| `GROQ_MODEL` | Recommended | `openai/gpt-oss-120b` | `src/generation/llm_client.py` |
 | `PINECONE_API_KEY` | Yes (Phase 3+) | `pcsk_...` | `src/ingestion/embedder.py`, `src/retrieval/retriever.py` |
 | `PINECONE_INDEX` | Yes (Phase 3+) | `mf-faq-chunks` | Ingestion + retrieval |
 | `PINECONE_NAMESPACE` | Yes (Phase 3+) | `mf-faq-active` | Ingestion + retrieval |
@@ -657,7 +656,7 @@ Set these in **GitHub → Settings → Secrets and variables → Actions**:
 
 ```bash
 GROQ_API_KEY=
-GROQ_MODEL=llama-3.1-8b-instant
+GROQ_MODEL=openai/gpt-oss-120b
 PINECONE_API_KEY=
 PINECONE_INDEX=mf-faq-chunks
 PINECONE_NAMESPACE=mf-faq-active
@@ -920,7 +919,7 @@ Guardrails ─▶ Generation  ───▶ UI             ───▶ Integrati
 | Step | Action | Output |
 |------|--------|--------|
 | 6.1 | Implement `src/generation/prompt_templates.py` — system prompt + context + user query template (as defined in Section 2.8) | Prompt builder function |
-| 6.2 | Implement `src/generation/llm_client.py` — Groq API wrapper (`llama-3.1-8b-instant`, temp=0.1, max_tokens=300), reads key from `.env` | `generate(prompt) → raw_response` |
+| 6.2 | Implement `src/generation/llm_client.py` — Groq API wrapper (`openai/gpt-oss-120b`, temp=0.1, max_tokens=1024 incl. reasoning), reads key from `.env` | `generate(prompt) → raw_response` |
 | 6.3 | Implement `src/generation/formatter.py` — extract answer text, append source link and last-updated timestamp | Formatted answer string |
 | 6.4 | End-to-end test: hardcode 3 retrieved chunks → call LLM → verify answer ≤3 sentences, has citation, has date | Verified output |
 
@@ -1025,7 +1024,7 @@ cd frontend && npm run dev                  # UI at localhost:3000
 | Embedding model | llama-text-embed-v2 | OpenAI text-embedding-3-small | Strong semantic quality; managed API workflow fits Pinecone cloud setup |
 | Re-ranker | Cross-encoder | None | Dramatically improves precision for factual Q&A; cheap to run on 10 candidates |
 | Chunk size | 500 tokens | 256 / 1000 | Balances fact density vs. context completeness for MF documents |
-| LLM | Groq `llama-3.1-8b-instant` | Groq `llama-3.1-70b-versatile`, hosted alternatives | Fast, low-latency generation with good factual formatting |
+| LLM | Groq `openai/gpt-oss-120b` | Groq `llama-3.1-8b-instant`, hosted alternatives | Stronger instruction-following and JSON adherence; still low-latency on Groq |
 | Guardrails | Rule-based (regex + keywords) | LLM-based classification | Deterministic, zero-latency, no false negatives for PII patterns |
 | UI | **Next.js 14** (primary) + Streamlit (legacy) | Gradio, plain React | Next.js gives production-grade SSR, Tailwind styling matching design spec; FastAPI REST API decouples backend from UI. Streamlit kept for quick local testing. |
 | Corpus / citations | Groww (7 URLs: AMC + 6 schemes) | AMC PDFs / SEBI | Explicit project scope: all ingested chunks cite one of the listed Groww URLs |

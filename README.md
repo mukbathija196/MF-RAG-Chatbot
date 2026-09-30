@@ -6,7 +6,7 @@ This project is a RAG-based chatbot for Nippon India Mutual Fund scheme FAQs, us
 
 ## Stack
 
-- **Backend**: Python 3.11+, FastAPI, Pinecone, Groq (`llama-3.1-8b-instant`)
+- **Backend**: Python 3.11+, FastAPI, Pinecone, Groq (`openai/gpt-oss-120b`)
 - **Frontend**: Next.js 14, React 18, Tailwind CSS
 - **Legacy UI**: Streamlit (still available)
 
@@ -34,7 +34,7 @@ Required keys:
 Recommended:
 
 - `EMBEDDING_MODEL=llama-text-embed-v2`
-- `GROQ_MODEL=llama-3.1-8b-instant`
+- `GROQ_MODEL=openai/gpt-oss-120b`
 
 ### 3. Frontend
 

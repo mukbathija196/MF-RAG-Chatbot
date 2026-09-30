@@ -39,7 +39,7 @@ Accounts/API keys required:
 - Render account (free or starter tier)
 - Vercel account (Hobby tier is sufficient)
 - Pinecone project with a serverless index matching `PINECONE_INDEX`
-- Groq API key with access to `GROQ_MODEL` (default `llama-3.1-8b-instant`)
+- Groq API key with access to `GROQ_MODEL` (default `openai/gpt-oss-120b`)
 
 Local requirements for deployment work:
 
@@ -56,7 +56,7 @@ environments, with environment-specific differences noted below.
 | Variable | Example | Notes |
 |---|---|---|
 | `GROQ_API_KEY` | `gsk_…` | Required for backend. Not needed on Vercel. |
-| `GROQ_MODEL` | `llama-3.1-8b-instant` | Backend only. |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Backend only. |
 | `PINECONE_API_KEY` | `pcsk_…` | Required for backend + scheduler. |
 | `PINECONE_INDEX` | `mf-faq-chunks` | Must exist before first deploy. |
 | `PINECONE_NAMESPACE` | `faq-chatbot-active` | Active namespace served by the API. |

@@ -18,6 +18,7 @@ from src.retrieval.retriever import retrieve
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE = "https://groww.in/mutual-funds/amc/nippon-india-mutual-funds"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 RETURNS_RECORDS_PATH = REPO_ROOT / "data" / "processed" / "returns_records.jsonl"
 LOW_CONFIDENCE_PHRASES = (
     "i don't have that information",
@@ -828,17 +829,21 @@ def _generate_answer_payload(query: str, chunks: list[dict[str, Any]]) -> dict[s
 
     try:
         client = _build_client()
-        model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+        model = os.getenv("GROQ_MODEL", "").strip() or DEFAULT_GROQ_MODEL
         prompt = build_user_prompt(query, scoped_chunks)
         print(f"[generation] Calling Groq model={model}")
+        # gpt-oss is a reasoning model: reasoning tokens count toward max_tokens, so keep
+        # effort low and leave headroom for the JSON answer. Other models reject the param.
+        is_reasoning_model = "gpt-oss" in model
         response = client.chat.completions.create(
             model=model,
             temperature=0.1,
-            max_tokens=300,
+            max_tokens=1024 if is_reasoning_model else 300,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
+            extra_body={"reasoning_effort": "low"} if is_reasoning_model else None,
         )
         content = response.choices[0].message.content if response.choices else ""
         parsed = _parse_json_response(content or "")
