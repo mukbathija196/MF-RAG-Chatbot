@@ -27,13 +27,14 @@ services:
       - key: PINECONE_API_KEY
         sync: false
       # Optional: add PINECONE_HOST in the dashboard if you use host-based Pinecone.
-      # Optional non-defaults (edit in dashboard if different).
+      # Blueprint sync re-applies these values on every push that changes this file, overriding
+      # the dashboard. They MUST match the real Pinecone index/namespace used by ingestion.
       - key: GROQ_MODEL
         value: openai/gpt-oss-120b
       - key: PINECONE_INDEX
-        value: mf-faq-chunks
+        value: faq-chatbot
       - key: PINECONE_NAMESPACE
-        value: mf-faq-active
+        value: faq-chatbot-active
       - key: PINECONE_CLOUD
         value: aws
       - key: PINECONE_REGION
