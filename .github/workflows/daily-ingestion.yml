@@ -60,7 +60,8 @@ jobs:
             exit 0
           fi
           git commit -m "chore(data): daily ingest refresh $(date -u +%Y-%m-%d)"
-          git pull --rebase origin main
+          # --autostash: data/raw/ is tracked but intentionally left uncommitted.
+          git pull --rebase --autostash origin main
           git push origin HEAD:main
 
       - uses: actions/upload-artifact@v4
