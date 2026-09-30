@@ -49,8 +49,8 @@ _METRIC_STRICT_PATTERNS = {
     "exit load": re.compile(r"exit load[^.\n]{0,120}\d+(?:\.\d+)?%", re.IGNORECASE),
     "sip": re.compile(r"(min\.?\s*for\s*sip|minimum sip(?: investment)?)\b[^₹\n]{0,60}₹\s*[0-9,]+", re.IGNORECASE),
     "minimum sip": re.compile(r"(min\.?\s*for\s*sip|minimum sip(?: investment)?)\b[^₹\n]{0,60}₹\s*[0-9,]+", re.IGNORECASE),
-    "minimum investment": re.compile(r"(minimum investment|min\.?\s*investment)\b[^₹\n]{0,60}₹\s*[0-9,]+", re.IGNORECASE),
-    "lumpsum": re.compile(r"(minimum investment|min\.?\s*investment)\b[^₹\n]{0,60}₹\s*[0-9,]+", re.IGNORECASE),
+    "minimum investment": re.compile(r"(minimum (lumpsum )?investment|min\.?\s*investment)\b[^₹\n]{0,60}₹\s*[0-9,]+|lumpsum investment:\s*not supported", re.IGNORECASE),
+    "lumpsum": re.compile(r"(minimum (lumpsum )?investment|min\.?\s*investment)\b[^₹\n]{0,60}₹\s*[0-9,]+|lumpsum investment:\s*not supported", re.IGNORECASE),
     "aum": re.compile(r"fund size\s*\(aum\)\s*[:\n]?\s*₹\s*[0-9,\.]+\s*cr", re.IGNORECASE),
     "fund size": re.compile(r"fund size\s*\(aum\)\s*[:\n]?\s*₹\s*[0-9,\.]+\s*cr", re.IGNORECASE),
     "nav": re.compile(r"(latest\s+nav|nav)[^\n₹]{0,60}₹\s*[0-9,\.]+", re.IGNORECASE),
@@ -59,8 +59,8 @@ _METRIC_STRICT_PATTERNS = {
     "rating": re.compile(r"\brating\s*[:\n]\s*([1-5])\b", re.IGNORECASE),
     "star": re.compile(r"\brating\s*[:\n]\s*([1-5])\b", re.IGNORECASE),
     "stars": re.compile(r"\brating\s*[:\n]\s*([1-5])\b", re.IGNORECASE),
-    "lock-in": re.compile(r"(lock[\s-]?in)[^\n]{0,80}\b\d+\s*(year|years)\b", re.IGNORECASE),
-    "lock in": re.compile(r"(lock[\s-]?in)[^\n]{0,80}\b\d+\s*(year|years)\b", re.IGNORECASE),
+    "lock-in": re.compile(r"(lock[\s-]?in)[^\n]{0,80}\b\d+\s*(year|years)\b|lock-in period:\s*no lock-in", re.IGNORECASE),
+    "lock in": re.compile(r"(lock[\s-]?in)[^\n]{0,80}\b\d+\s*(year|years)\b|lock-in period:\s*no lock-in", re.IGNORECASE),
     "3y": re.compile(r"(3y|3\s*year|3\s*yr)[^\n]{0,100}\d+(?:\.\d+)?%", re.IGNORECASE),
     "3 year": re.compile(r"(3y|3\s*year|3\s*yr)[^\n]{0,100}\d+(?:\.\d+)?%", re.IGNORECASE),
     "annualised return": re.compile(r"(annuali[sz]ed|return|cagr)[^\n]{0,120}\d+(?:\.\d+)?%", re.IGNORECASE),
@@ -247,10 +247,19 @@ def _enforce_metric_coverage(
             break
 
     if metric_candidate is None:
-        # Search in all available chunks as a deterministic fallback.
+        # Search in all available chunks as a deterministic fallback. The local file can lag
+        # Pinecone (e.g. before a redeploy picks up a fresh ingest), so never use rows older
+        # than what Pinecone returned.
+        freshest = max(
+            (str(row.get("metadata", {}).get("last_scraped_date", "") or "") for row in candidates),
+            default="",
+        )
         for row in chunk_lookup.values():
             row_scheme = str(row.get("metadata", {}).get("scheme_name", "")).strip()
             if matched_scheme and row_scheme and row_scheme != matched_scheme:
+                continue
+            row_date = str(row.get("metadata", {}).get("last_scraped_date", "") or "")
+            if freshest and row_date < freshest:
                 continue
             text = str(row.get("text", ""))
             if _metric_strict_match(query, text):
@@ -358,13 +367,18 @@ def retrieve(
             match_id = str(getattr(match, "id", ""))
             metadata = dict(getattr(match, "metadata", {}) or {})
 
-        if score < similarity_threshold or not match_id:
+        if not match_id:
             continue
         chunk_row = chunk_lookup.get(match_id, {})
         text = str(chunk_row.get("text", "") or "").strip()
         if not text:
             text = str(metadata.get("chunk_text", "") or "").strip()
         if not text:
+            continue
+        # Dense key-facts chunks (NAV / SIP / AUM / expense ratio) embed poorly against a
+        # natural-language question and can land just under the threshold; keep them when
+        # they actually contain the requested metric rather than falling back to local files.
+        if score < similarity_threshold and not (metric_query and _metric_strict_match(normalized_query, text)):
             continue
         candidates.append(
             {

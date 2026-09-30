@@ -225,6 +225,40 @@ def _extract_returns_from_next_data(raw_html: str) -> dict[str, float]:
     return returns
 
 
+def _extract_key_facts_from_next_data(raw_html: str) -> list[str]:
+    """Facts Groww shows only as badges / JSON (not in the visible text we keep): lock-in and
+    lumpsum eligibility. Phrased to match the metric extractors in src/generation/llm_client.py."""
+    soup = BeautifulSoup(raw_html, "html.parser")
+    script = soup.find("script", id="__NEXT_DATA__")
+    if not script or not script.string:
+        return []
+    try:
+        payload = json.loads(script.string)
+    except json.JSONDecodeError:
+        return []
+    mf_data = payload.get("props", {}).get("pageProps", {}).get("mfServerSideData", {})
+    if not isinstance(mf_data, dict) or not mf_data:
+        return []
+
+    facts: list[str] = []
+    lock_in = mf_data.get("lock_in") or {}
+    if isinstance(lock_in, dict):
+        parts = [
+            f"{value} {unit if value != 1 else unit.rstrip('s')}"
+            for unit in ("years", "months", "days")
+            if isinstance((value := lock_in.get(unit)), int) and value > 0
+        ]
+        facts.append(f"Lock-in period: {' '.join(parts)}" if parts else "Lock-in period: No lock-in")
+
+    lumpsum_allowed = mf_data.get("lumpsum_allowed")
+    min_lumpsum = mf_data.get("min_investment_amount")
+    if lumpsum_allowed is False:
+        facts.append("Lumpsum investment: Not supported (SIP only)")
+    elif isinstance(min_lumpsum, (int, float)) and min_lumpsum > 0:
+        facts.append(f"Minimum lumpsum investment: ₹{int(min_lumpsum):,}")
+    return facts
+
+
 def _write_returns_records(
     parsed_rows: list[dict[str, Any]],
     raw_html_by_doc_id: dict[str, str],
@@ -304,6 +338,13 @@ def parse_documents() -> list[dict[str, Any]]:
         clean_text = _clean_html(raw_html)
         if not clean_text:
             continue
+        if row.get("role") != "amc":
+            key_facts = _extract_key_facts_from_next_data(raw_html)
+            if key_facts:
+                # Single newline (not a paragraph break) so the splitter keeps these lines with
+                # the page header instead of emitting a tiny chunk that MIN_TOKENS would drop.
+                header = f"Key facts for {row.get('scheme_name') or 'this fund'}"
+                clean_text = header + "\n" + "\n".join(key_facts) + "\n" + clean_text
 
         doc_id = row.get("sha256") or hashlib.sha256(clean_text.encode("utf-8")).hexdigest()
         raw_html_by_doc_id[str(doc_id)] = raw_html

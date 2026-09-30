@@ -60,7 +60,7 @@ METRIC_QUERY_TERMS = (
 
 _METRIC_PATTERNS = {
     "expense ratio": re.compile(r"expense ratio[^0-9]*(\d+(?:\.\d+)?%)", re.IGNORECASE),
-    "exit load": re.compile(r"(exit load[^.\n]*\.)", re.IGNORECASE),
+    "exit load": re.compile(r"(exit load[^\n]*?)(?:\.(?!\d)|\n|$)", re.IGNORECASE),
     "sip": re.compile(r"min\.?\s*for\s*sip[^₹\n]*₹\s*([0-9,]+)", re.IGNORECASE),
     "minimum sip": re.compile(r"(?:min\.?\s*for\s*sip|minimum sip(?: investment)?)\b[^₹\n]*₹\s*([0-9,]+)", re.IGNORECASE),
     "minimum investment": re.compile(r"(?:minimum investment|min\.?\s*investment|lump\s*sum minimum amount|minimum lumpsum investment)\b[^₹\n]*₹\s*([0-9,]+)", re.IGNORECASE),
@@ -71,8 +71,8 @@ _METRIC_PATTERNS = {
     "3y": re.compile(r"(?:3y|3\s*year|3\s*yr)(?:\s+annuali[sz]ed)?[\s\S]{0,120}?([+-]?\d+(?:\.\d+)?\s*%)", re.IGNORECASE),
     "3 year": re.compile(r"(?:3y|3\s*year|3\s*yr)(?:\s+annuali[sz]ed)?[\s\S]{0,120}?([+-]?\d+(?:\.\d+)?\s*%)", re.IGNORECASE),
     "return": re.compile(r"(?:3y|3\s*year|annuali[sz]ed|return|cagr)[\s\S]{0,150}?([+-]?\d+(?:\.\d+)?\s*%)", re.IGNORECASE),
-    "lock-in": re.compile(r"lock[\s-]?in[^\n]{0,60}(\d+\s*(?:year|years))", re.IGNORECASE),
-    "lock in": re.compile(r"lock[\s-]?in[^\n]{0,60}(\d+\s*(?:year|years))", re.IGNORECASE),
+    "lock-in": re.compile(r"lock[\s-]?in[^\n]{0,60}(\d+\s*years?)", re.IGNORECASE),
+    "lock in": re.compile(r"lock[\s-]?in[^\n]{0,60}(\d+\s*years?)", re.IGNORECASE),
     "benchmark": re.compile(r"fund benchmark[^.\n]*\n?([A-Za-z0-9 &\-\(\)]+(?:Index|TRI|Index\))?)", re.IGNORECASE),
     "risk": re.compile(r"rated\s+([A-Za-z ]+)\s+risk", re.IGNORECASE),
     "rating": re.compile(r"\brating\s*[:\n]\s*([1-5])\b", re.IGNORECASE),
@@ -141,14 +141,12 @@ def _deterministic_fallback(query: str, chunks: list[dict[str, Any]]) -> dict[st
         if answer:
             last_updated = _max_meta_dates(scoped_chunks)
     if not answer:
-        if contexts:
-            preview = " ".join(contexts[0].splitlines()[:2])[:260]
-            answer = f"I found relevant source information: {preview}"
-        else:
-            answer = (
-                "I don't have that information in my sources. Please check the official source pages: "
-                "https://groww.in/mutual-funds/amc/nippon-india-mutual-funds"
-            )
+        # A raw chunk preview here reads as an answer but usually isn't one (e.g. a list of
+        # other funds), so say plainly that the sources don't cover it.
+        answer = (
+            "I don't have that information in my sources. Please check the official source pages: "
+            "https://groww.in/mutual-funds/amc/nippon-india-mutual-funds"
+        )
 
     source_url = next((src for src in sources if src), DEFAULT_SOURCE)
     if last_updated is None:
@@ -204,8 +202,50 @@ def _first_row_with_text_prefix(rows: list[dict[str, Any]], prefix: str) -> dict
     return None
 
 
+_EXIT_LOAD_CURRENT_RE = re.compile(
+    r"Exit load, stamp duty and tax\s*\n\s*Exit load\s*\n\s*([^\n]+)", re.IGNORECASE
+)
+_EXIT_LOAD_LINE_RE = re.compile(r"^\s*((?:exit load|the exit load)\b[^\n]*?)(?:\.(?!\d)|$)", re.IGNORECASE | re.MULTILINE)
+_HISTORY_DATE_LINE_RE = re.compile(r"^\s*\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s*$")
+
+
+def _extract_exit_load(context: str) -> str | None:
+    """Current exit load. Groww also lists past exit loads, each preceded by an effective-date
+    line (e.g. '05 Dec 2014'); skip those so a superseded rule is never reported."""
+    match = _EXIT_LOAD_CURRENT_RE.search(context)
+    if match:
+        return match.group(1).strip()
+    lines = context.split("\n")
+    for idx, line in enumerate(lines):
+        m = _EXIT_LOAD_LINE_RE.match(line)
+        if not m:
+            continue
+        sentence = m.group(1).strip()
+        if sentence.lower().rstrip(":") in {"exit load", "the exit load"} or sentence.lower().startswith("exit load,"):
+            continue  # section headings / glossary labels
+        if idx > 0 and _HISTORY_DATE_LINE_RE.match(lines[idx - 1]):
+            continue
+        return sentence
+    return None
+
+
 def _extract_metric_answer(query: str, context: str) -> str | None:
     lowered = query.lower()
+    if ("lumpsum" in lowered or "minimum investment" in lowered) and re.search(
+        r"lumpsum investment:\s*not supported", context, re.IGNORECASE
+    ):
+        return "Lumpsum (one-time) investment is not supported for this fund; it accepts SIP only."
+    if ("lock-in" in lowered or "lock in" in lowered) and re.search(
+        r"lock-in period:\s*no lock-in", context, re.IGNORECASE
+    ):
+        return "This fund has no lock-in period."
+    if "exit load" in lowered:
+        exit_load = _extract_exit_load(context)
+        if exit_load:
+            sentence = exit_load.rstrip(".")
+            if not sentence.lower().startswith(("exit load", "the exit load")):
+                sentence = f"Exit load: {sentence}"
+            return f"{sentence}."
     period_specific_returns = _is_returns_query(query) and bool(_detect_periods(query))
     for metric, pattern in _METRIC_PATTERNS.items():
         if metric in lowered:
@@ -242,7 +282,7 @@ def _extract_metric_answer(query: str, context: str) -> str | None:
                     return f"{sentence}."
                 return f"{metric.title()} is {value}."
     if ("lock" in lowered or "lock-in" in lowered) and "year" in lowered:
-        year_match = re.search(r"\b(\d+\s*(?:year|years))\b", context, flags=re.IGNORECASE)
+        year_match = re.search(r"\b(\d+\s*years?)\b", context, flags=re.IGNORECASE)
         if year_match:
             return f"Lock-in period is {year_match.group(1)}."
     return None
@@ -809,8 +849,20 @@ def _generate_answer_payload(query: str, chunks: list[dict[str, Any]]) -> dict[s
 
     # Deterministic path for numeric factual metrics to avoid cross-scheme leakage.
     if _is_metric_query(query):
-        metric_answer = _extract_metric_answer(query, "\n".join(row.get("text", "") for row in scoped_chunks))
-        if metric_answer:
+        # Match per chunk so the cited source/date belong to the chunk that supplied the
+        # value (and a pattern can't run across chunk boundaries); prefer the freshest.
+        metric_hits = [
+            (answer, row)
+            for row in scoped_chunks
+            if (answer := _extract_metric_answer(query, str(row.get("text", "") or "")))
+        ]
+        if metric_hits:
+            metric_answer, metric_row = max(metric_hits, key=lambda hit: _chunk_meta_date(hit[1]))
+            meta = metric_row.get("metadata", {}) or {}
+            source_url = str(meta.get("source_url", "") or "").strip() or DEFAULT_SOURCE
+            last_updated = _chunk_meta_date(metric_row) or _max_meta_dates(scoped_chunks)
+        else:
+            metric_answer = _extract_metric_answer(query, "\n".join(row.get("text", "") for row in scoped_chunks))
             source_url = next(
                 (
                     str(row.get("metadata", {}).get("source_url", "") or "").strip()
@@ -820,6 +872,7 @@ def _generate_answer_payload(query: str, chunks: list[dict[str, Any]]) -> dict[s
                 DEFAULT_SOURCE,
             )
             last_updated = _max_meta_dates(scoped_chunks)
+        if metric_answer:
             return {
                 "answer": metric_answer,
                 "source_url": source_url or DEFAULT_SOURCE,
