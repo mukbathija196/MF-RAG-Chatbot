@@ -10,7 +10,7 @@ built and tested locally.
 |---|---|---|---|
 | Scheduler (ingestion) | Python 3.11 | **GitHub Actions** | Daily cron + manual `workflow_dispatch` |
 | Backend API (FastAPI) | Python 3.11 + Uvicorn | **Render** (Web Service) | Push to `main` → auto-deploy |
-| Frontend (Next.js 14) | Node 20 | **Vercel** | Push to `main` → auto-deploy |
+| Frontend (Next.js 14) | Node 24 | **Vercel** | Push to `main` → auto-deploy |
 | Vector DB | Pinecone (managed) | Pinecone Cloud | Updated by scheduler |
 | LLM | Groq API | Groq Cloud | Called by backend at request time |
 
@@ -270,7 +270,7 @@ Create a new Vercel project from the same GitHub repository.
 | Build command | `next build` (default) |
 | Output directory | **Leave empty** — this app uses Next **`output: 'export'`**, so the publishable bundle is `frontend/out/`, which Vercel picks up automatically. Do **not** point Output Directory at `.next`. |
 | Install command | `npm install` (default) |
-| Node version | 20.x |
+| Node version | 24.x |
 
 ### 6.2 Environment variables
 
@@ -313,15 +313,23 @@ links pick up the right preset when Vercel reads config from the app root.
 
 #### Node.js version
 
-Use **Node.js 20.x** on Vercel (Project Settings → Node.js Version). **24.x** is
-usually unnecessary for Next 14 and can surface avoidable toolchain issues.
+Vercel has discontinued Node.js 20.x. `frontend/package.json` pins `"engines": { "node": "24.x" }`,
+which overrides the Project Settings → Node.js Version dropdown (set it to **24.x** too to avoid a
+mismatch warning).
+
+#### Skipped builds for data-only commits
+
+The daily ingestion bot commits `data/processed/` to `main` every day. `frontend/vercel.json` sets
+`"ignoreCommand": "git diff --quiet HEAD^ HEAD -- ."` (run from the `frontend` root directory), so
+Vercel cancels the build when a commit does not touch `frontend/`. Those deployments show as
+**Canceled** (by Ignored Build Step), not Failed.
 
 #### Checklist
 
 1. **Root Directory** = **`frontend`** (you already have this correct).
 2. **Framework Preset** = **Next.js** (not *Other*).
 3. **Output Directory** override = **off** / empty (do not force `public` or `.next`).
-4. **Node.js** = **20.x** (recommended).
+4. **Node.js** = **24.x** (20.x is discontinued).
 5. Trigger **Deployments → … → Redeploy** (optionally “Clear cache and redeploy”).
 
 **Alternative:** create a **Static Site** project instead of a Web Service, with
